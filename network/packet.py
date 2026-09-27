@@ -1,7 +1,8 @@
 from dataclasses import dataclass, asdict
 import json
 
-VALID_TYPES = {"DATA", "RESPONSE"}
+VALID_PACKET_TYPES = {"DATA", "RESPONSE"}
+MAX_SIZE = 1200
 
 class PacketError(Exception):
     pass
@@ -30,7 +31,7 @@ class Packet:
             raise PacketError("id must be an int")
         if not isinstance(self.payload, str):
             raise PacketError("payload must be a str")
-        if self.type not in VALID_TYPES:
+        if self.type not in VALID_PACKET_TYPES:
             raise PacketError("Invalid type")
 
         # Range check
@@ -51,14 +52,14 @@ class Packet:
         json_string = json.dumps(packet_dict)
         json_bytes = json_string.encode("utf-8")
 
-        if len(json_bytes) > 1200:
+        if len(json_bytes) > MAX_SIZE:
             raise PacketError("Packet size exceeded")
 
         return json_bytes
 
     @classmethod
     def from_bytes(cls, json_bytes):
-        if len(json_bytes) > 1200:
+        if len(json_bytes) > MAX_SIZE:
             raise PacketError("Packet size exceeded")
         try:
             json_string = json_bytes.decode("utf-8")
