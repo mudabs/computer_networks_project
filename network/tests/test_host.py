@@ -13,5 +13,3 @@ print(h1.neighbors)
 print(h2.id)
 print(h2.address)
 print(h2.neighbors)
-
-Host("A", config)

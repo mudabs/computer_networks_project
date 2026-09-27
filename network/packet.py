@@ -4,7 +4,12 @@ import json
 VALID_PACKET_TYPES = {"DATA", "RESPONSE"}
 MAX_SIZE = 1200
 
+
 class PacketError(Exception):
+    pass
+
+
+class PacketSizeError(PacketError):
     pass
 
 
@@ -53,14 +58,14 @@ class Packet:
         json_bytes = json_string.encode("utf-8")
 
         if len(json_bytes) > MAX_SIZE:
-            raise PacketError("Packet size exceeded")
+            raise PacketSizeError("Packet size exceeded")
 
         return json_bytes
 
     @classmethod
     def from_bytes(cls, json_bytes):
         if len(json_bytes) > MAX_SIZE:
-            raise PacketError("Packet size exceeded")
+            raise PacketSizeError("Packet size exceeded")
         try:
             json_string = json_bytes.decode("utf-8")
             packet_dict = json.loads(json_string)
