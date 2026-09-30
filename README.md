@@ -1,87 +1,121 @@
 # Mini Internet
 
-CSCI 5500 Computer Networks, Fall 2026 · Group 1
+CSCI 5500 Computer Networks, Fall 2026 - Group 1
 
-This repository is a work in progress for the Mini Internet project. The goal is to run two hosts and four routers as separate Python processes communicating over UDP. The routers forward packets according to manually configured tables. The team will build the common network first, then implement and evaluate its chosen extension track.
+This repository contains an early implementation of the Mini Internet project. The intended network has two hosts and four routers communicating over UDP on one computer. The repository currently contains configuration and packet-building code, an early host class, and an unfinished router/integration prototype.
 
 ## Current status
 
-The present files form an **early router prototype**. `test_routers.py` temporarily simulates both hosts so the routers can be exercised before the team's host programs are integrated. The current configuration selects the upper path. A successful single-probe test is a development check, not evidence that all project requirements have been met.
+The codebase is not yet an end-to-end runnable network. The packet and configuration modules use the newer interfaces described below, while `network/router.py` and `network/tests/test_routers.py` still use an older packet/configuration interface. As a result, the documented router integration flow is currently blocked until those components are reconciled.
+
+The configured topology is:
 
 ```text
-              Router B
-             /        \
-Host 1 -- Router A      Router D -- Host 2
-             \        /
-              Router C
+              B
+             / \
+            /   \
+H1 -------- A     D -------- H2
+            \   /
+             \ /
+              C
 ```
 
-The topology links are bidirectional. The configured upper route is `H1 → A → B → D → H2`; the response travels `H2 → D → B → A → H1`. The lower route through C also needs to be demonstrated by changing the static tables between runs.
+The links are represented as bidirectional links in `network/data/network.json`.
 
-## Repository files
+## Repository layout
 
-| File | Current purpose |
+| Path | Purpose |
 |---|---|
-| `RouterA.py`–`RouterD.py` | Router processes; the four files currently differ only in their `NAME` value. |
-| `config.json` | UDP ports, each host's adjacent router, and static forwarding tables. |
-| `packet.py` | Current JSON packet creation and parsing. Its format is provisional until the team agrees on the shared interface. |
-| `test_routers.py` | Temporary integration check that simulates H1 and H2 and sends one probe and echo. |
-| `ROUTERS.md` | Router startup notes. |
-| `LICENSE` | Repository license; the team should confirm its attribution and publication choice. |
+| `network/config.py` | Loads the current device, address, link, and route data. |
+| `network/data/network.json` | Device types, UDP addresses, and physical/logical links. |
+| `network/data/routes.json` | Static destination-to-next-hop route entries. |
+| `network/packet.py` | Current `Packet` dataclass, validation, JSON serialization, and size checks. |
+| `network/host.py` | Early `Host` class that binds a UDP socket and can send fragmented data packets. |
+| `network/router.py` | Early router loop; currently uses missing legacy packet functions and the legacy config format. |
+| `network/tests/test_config.py` | Executable configuration validation script. |
+| `network/tests/test_host.py` | Exploratory host script; currently needs to be updated to the current `Host` API. |
+| `network/tests/test_routers.py` | Legacy integration script; currently needs to be updated to the current packet and config APIs. |
+| `network/info/PACKET.md` | Packet-format notes for the current packet interface. |
+| `network/info/ROUTERS.md` | Older router startup notes that still need to be revised. |
+| `network/config.json` | Legacy router prototype configuration. It is not the configuration source used by `network/config.py`. |
+| `Mini_Internet_Project.md` | Project description, requirements, and evaluation guidance. |
 
 ## Requirements
 
 - Python 3
-- Local UDP ports `5001`, `5002`, and `6001`–`6004` available for the current configuration
-- No third-party Python packages are used by these prototype files
+- Local UDP ports `5001`, `5002`, and `6001` through `6004` available for the current configuration
+- No third-party Python packages are required by the current source files
 
-All processes can run on one computer using `127.0.0.1`. The current port assignments are examples and may change when the team finalizes configuration.
+All configured addresses use `127.0.0.1`, so the network is intended to run on one computer once the router and host processes are integrated.
 
-## Run the current development check
+## Current configuration
 
-From the repository directory, start each router in its own terminal:
+`network/data/network.json` is the active topology configuration. It defines:
 
-```bash
-python RouterA.py
-python RouterB.py
-python RouterC.py
-python RouterD.py
+- Hosts `H1` and `H2`
+- Routers `A`, `B`, `C`, and `D`
+- UDP addresses for all six devices
+- Links `H1-A`, `A-B`, `A-C`, `B-D`, `C-D`, and `D-H2`
+
+`network/data/routes.json` is the active static route data. Its default upper path is:
+
+```text
+H1 -> A -> B -> D -> H2
+H2 -> D -> B -> A -> H1
 ```
 
-Then, in a fifth terminal, run:
+The lower path through `C` is present in the topology but is not the default route. The intended lower-path route change is to set `A`'s `H2` next hop to `C` and `D`'s `H1` next hop to `C` in `network/data/routes.json`. The router process does not yet consume this file, so changing it alone does not currently produce a working end-to-end run.
 
-```bash
-python test_routers.py
-```
+## Current packet format
 
-The test sends one probe from its simulated H1 to H2 and sends an echo back. Inspect the router terminals for the message ID and forwarding events along the upper route. The test has a two-second socket timeout; a timeout means the exchange did not complete and requires investigation. Stop each router with Ctrl+C.
+`network/packet.py` represents packets with six fields:
 
-**Temporary test:** `test_routers.py` binds both host ports. Do not run it at the same time as separate host processes using those same ports.
-
-## Current packet agreement
-
-`packet.py` currently encodes a packet as UTF-8 JSON with these keys:
-
-| Key | Meaning |
+| Field | Meaning |
 |---|---|
 | `src` | Original virtual source, such as `H1` |
 | `dst` | Final virtual destination, such as `H2` |
-| `type` | Message type, currently `PROBE` or `ECHO` in the test |
-| `id` | Message identifier used to match the probe and echo |
-| `ttl` | Hop limit; a router drops an incoming packet when this is at most 1 |
-| `payload` | Message content |
+| `hop_limit` | Forwarding hop limit, from `1` through `8` |
+| `type` | Currently `DATA` or `RESPONSE` |
+| `id` | Unsigned 32-bit message identifier |
+| `payload` | String application data |
 
-The serialized UDP payload limit is 1,200 bytes. **These field names and encoding are provisional.** The host and router developers should agree on one shared format before changing it. When the format changes, both sides and the integration test must change together.
+Packets are serialized as UTF-8 JSON. The complete serialized packet must be no larger than 1,200 bytes. Use `Packet.to_bytes()` to serialize and `Packet.from_bytes()` to parse and validate.
 
-## Configuration and routes
+The older `ttl`, `PROBE`, `ECHO`, `make_packet`, and `parse_packet` interface is still referenced by the unfinished router prototype and legacy integration script, but it is not part of the current `Packet` API.
 
-The current `config.json` maps each device name to a UDP port. H1's adjacent router is A; H2's is D. Each router's `table` maps a **final virtual destination** to a **next-hop neighbor**. The upper-path configuration has A send packets for H2 to B and D send packets for H1 to B.
+## Checks that currently run
 
-For a lower-path run, the current notes call for changing A's `H2` entry to `C` and D's `H1` entry to `C`. Record which configuration was used for each demonstration. Routes are static; the common network does not automatically switch paths after a failure.
+From the repository root:
 
-## Work remaining
+```bash
+python -m compileall -q network
+```
 
-The current prototype does not yet demonstrate the full common-network requirements. In particular, the team still needs to integrate the real host programs; define and enforce configured neighbors; validate configuration and packets more thoroughly; demonstrate both directions and both static paths; provide hop-limit, error, loss, and delay scenarios; add traceable logs; run repeated baseline experiments; and collect Wireshark evidence. The chosen extension track comes after a working core checkpoint.
+The following command runs the current configuration checks. The explicit path insertion is required because the repository does not yet define an installable Python package or test runner configuration:
 
-Keep the exact setup, test commands, results, and contribution details up to date as the team implements these parts. The project handout and Canvas announcements govern submission requirements and deadlines.
+```bash
+python -c "import sys; sys.path.insert(0, 'network'); exec(open('network/tests/test_config.py', encoding='utf-8').read())"
+```
+
+A basic packet serialization check is:
+
+```bash
+python -c "import sys; sys.path.insert(0, 'network'); from packet import Packet; print(Packet('H1', 'H2', 8, 'DATA', 0, 'hello').to_bytes().decode())"
+```
+
+These checks verify syntax, configuration structure, and packet serialization only. They do not prove that packets can traverse the router topology.
+
+## Known blockers
+
+The end-to-end network still requires:
+
+1. Updating `network/router.py` to use `Packet.from_bytes()` and `Packet.to_bytes()`, `hop_limit`, and the current configuration loader.
+2. Updating or replacing `network/tests/test_routers.py` so it uses the current packet and route APIs.
+3. Adding runnable router entry points or a command-line router configuration instead of relying on the missing `RouterA.py` through `RouterD.py` files.
+4. Completing host receive/delivery behavior and correcting `network/tests/test_host.py` to use `Host.neighbor`.
+5. Enforcing configured neighbors and validating route entries before forwarding.
+6. Adding a real end-to-end test for both directions and both static paths.
+7. Adding the required hop-limit, error, loss, delay, logging, repeated-baseline, and Wireshark demonstrations from the project requirements.
+
+Until these items are addressed, this repository should be treated as an implementation checkpoint rather than a runnable mini-internet demonstration.
 
