@@ -2,7 +2,6 @@
 
 CSCI 4/5500: Computer Networks — Fall 2026
 
-> Edited Markdown copy of the project handout. The sentences about generative AI use in Section 9 were omitted at the requester’s direction. Consult the original handout and course syllabus for the complete rules.
 
 Format: Instructor-assigned teams of up to three students; eight weeks of development.
 Project launch: Wednesday, September 23, 2026.
