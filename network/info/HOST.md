@@ -134,9 +134,3 @@ The following issues require attention or integration verification.
 - **Message identifier wraparound:** Identifiers wrap modulo 2^32. Responses are matched using source, destination, type, and identifier, but identifiers should not be reused while an earlier request with the same identifier remains outstanding.
 
 Fragmentation, reassembly, retransmission, and automatic routing are outside the common-core scope.
-
-## Summary
-
-The Host component implements configured UDP communication, packet validation, probe/echo behavior, finite response timeouts, and host-side logging. Its unit tests pass.
-
-The remaining work is to verify end-to-end communication, collect common-network acceptance evidence, confirm the baseline repository checkpoint, and document the group's selected extension and experimental plan.
