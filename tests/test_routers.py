@@ -42,18 +42,18 @@ class NetworkExchangeTests(unittest.TestCase):
                     if packet is not None:
                         device.echo(packet)
 
-    def exchange(self, source, destination):
+    def exchange(self, source, destination, expected="hello", timeout=1):
         for router_id in self.config.route_data:
-            self.devices.append(Router(router_id, self.config))
-        receiver = Host(destination, self.config)
+            self.devices.append(Router(router_id, self.config, run_id="trace"))
+        receiver = Host(destination, self.config, run_id="trace")
         self.devices.append(receiver)
         for device in self.devices:
             thread = threading.Thread(target=self.serve, args=(device,), daemon=True)
             thread.start()
             self.threads.append(thread)
-        sender = Host(source, self.config)
+        sender = Host(source, self.config, run_id="trace")
         self.devices.append(sender)
-        self.assertEqual(sender.probe(destination, 'hello', timeout=1), 'hello')
+        self.assertEqual(sender.probe(destination, 'hello', timeout=timeout), expected)
         self.assertEqual(sender.packet_id, 1)  # Exactly one transmission.
 
     def test_h1_to_h2(self):
@@ -66,3 +66,27 @@ class NetworkExchangeTests(unittest.TestCase):
         self.config.route_data['A']['H2'] = 'C'
         self.config.route_data['D']['H1'] = 'C'
         self.exchange('H1', 'H2')
+
+    def test_request_loss_times_out_without_retry(self):
+        self.config.data['conditions'] = [dict(
+            **{'from': 'A', 'to': 'B'}, loss=1, delay_ms=0, seed=42)]
+        self.exchange('H1', 'H2', expected=None, timeout=0.05)
+
+    def test_response_loss_times_out_without_retry(self):
+        self.config.data['conditions'] = [dict(
+            **{'from': 'B', 'to': 'A'}, loss=1, delay_ms=0, seed=42)]
+        self.exchange('H1', 'H2', expected=None, timeout=0.05)
+
+    def test_delayed_exchange_and_complete_trace(self):
+        self.config.data['conditions'] = [dict(
+            **{'from': 'A', 'to': 'B'}, loss=0, delay_ms=20, seed=42)]
+        with self.assertLogs(level='INFO') as captured:
+            self.exchange('H1', 'H2')
+        trace = '\n'.join(captured.output)
+        for device in ('A', 'B', 'D'):
+            for kind in ('DATA', 'RESPONSE'):
+                self.assertTrue(any(f'device={device} event=forward' in line
+                                    and f'type={kind}' in line
+                                    for line in captured.output))
+        self.assertIn('event=delay', trace)
+        self.assertIn('seed=42', trace)
