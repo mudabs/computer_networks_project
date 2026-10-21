@@ -154,6 +154,193 @@ class TestHostCommunication(unittest.TestCase):
         self.assertIsNone(self.host.receive())
 
 
+class TestHostProbe(unittest.TestCase):
+    def setUp(self):
+        self.config = Config()
+
+        patcher = patch("host.socket.socket")
+        self.mock_socket = patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.mock_sock = self.mock_socket.return_value
+        self.host = Host("H1", self.config)
+        self.addCleanup(self.host.close)
+
+    def test_probe_returns_matching_response_payload(self):
+        response = Packet(
+            src="H2",
+            dst="H1",
+            hop_limit=8,
+            type="RESPONSE",
+            id=0,
+            payload="hello",
+        )
+        self.mock_sock.recvfrom.return_value = (
+            response.to_bytes(),
+            ("127.0.0.1", 6001),
+        )
+
+        result = self.host.probe("H2", "hello", timeout=1.0)
+
+        self.assertEqual(result, "hello")
+        self.mock_sock.sendto.assert_called_once()
+        self.mock_sock.settimeout.assert_called()
+
+    def test_probe_returns_none_when_timed_out(self):
+        import socket
+
+        self.mock_sock.recvfrom.side_effect = socket.timeout
+
+        result = self.host.probe("H2", "hello", timeout=0.1)
+
+        self.assertIsNone(result)
+
+    def test_probe_ignores_response_with_wrong_id(self):
+        import socket
+
+        wrong_response = Packet(
+            src="H2",
+            dst="H1",
+            hop_limit=8,
+            type="RESPONSE",
+            id=99,
+            payload="wrong",
+        )
+        self.mock_sock.recvfrom.side_effect = [
+            (wrong_response.to_bytes(), ("127.0.0.1", 6001)),
+            socket.timeout,
+        ]
+
+        result = self.host.probe("H2", "hello", timeout=0.1)
+
+        self.assertIsNone(result)
+
+    def test_probe_ignores_response_from_wrong_source(self):
+        import socket
+
+        wrong_response = Packet(
+            src="H3",
+            dst="H1",
+            hop_limit=8,
+            type="RESPONSE",
+            id=0,
+            payload="wrong",
+        )
+        self.mock_sock.recvfrom.side_effect = [
+            (wrong_response.to_bytes(), ("127.0.0.1", 6001)),
+            socket.timeout,
+        ]
+
+        result = self.host.probe("H2", "hello", timeout=0.1)
+
+        self.assertIsNone(result)
+
+
+class TestHostEcho(unittest.TestCase):
+    def setUp(self):
+        self.config = Config()
+
+        patcher = patch("host.socket.socket")
+        self.mock_socket = patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.mock_sock = self.mock_socket.return_value
+        self.host = Host("H1", self.config)
+        self.addCleanup(self.host.close)
+
+    def test_echo_sends_response_with_matching_id_and_payload(self):
+        request = Packet(
+            src="H2",
+            dst="H1",
+            hop_limit=8,
+            type="DATA",
+            id=42,
+            payload="hello",
+        )
+
+        self.host.echo(request)
+
+        self.mock_sock.sendto.assert_called_once()
+        packet_bytes, address = self.mock_sock.sendto.call_args.args
+        response = Packet.from_bytes(packet_bytes)
+
+        self.assertEqual(response.src, "H1")
+        self.assertEqual(response.dst, "H2")
+        self.assertEqual(response.type, "RESPONSE")
+        self.assertEqual(response.id, 42)
+        self.assertEqual(response.payload, "hello")
+        self.assertEqual(response.hop_limit, 8)
+        self.assertEqual(address, ("127.0.0.1", 6001))
+
+    def test_echo_ignores_response_packet(self):
+        packet = Packet(
+            src="H2",
+            dst="H1",
+            hop_limit=8,
+            type="RESPONSE",
+            id=42,
+            payload="hello",
+        )
+
+        self.host.echo(packet)
+
+        self.mock_sock.sendto.assert_not_called()
+
+
+class TestHostRun(unittest.TestCase):
+    def setUp(self):
+        self.config = Config()
+
+        patcher = patch("host.socket.socket")
+        self.mock_socket = patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.mock_sock = self.mock_socket.return_value
+        self.host = Host("H1", self.config)
+        self.addCleanup(self.host.close)
+
+    def test_run_echoes_data_and_stops_when_socket_closes(self):
+        request = Packet(
+            src="H2",
+            dst="H1",
+            hop_limit=8,
+            type="DATA",
+            id=7,
+            payload="hello",
+        )
+
+        self.host.receive = MagicMock(side_effect=[request, None, OSError("closed")])
+
+        self.host.run()
+
+        self.assertEqual(self.host.receive.call_count, 3)
+        self.mock_sock.sendto.assert_called_once()
+
+        response = Packet.from_bytes(self.mock_sock.sendto.call_args.args[0])
+        self.assertEqual(response.type, "RESPONSE")
+        self.assertEqual(response.id, 7)
+
+    def test_run_continues_after_socket_timeout(self):
+        import socket
+
+        request = Packet(
+            src="H2",
+            dst="H1",
+            hop_limit=8,
+            type="DATA",
+            id=8,
+            payload="hello",
+        )
+
+        self.host.receive = MagicMock(
+            side_effect=[socket.timeout(), request, OSError("closed")]
+        )
+
+        self.host.run()
+
+        self.assertEqual(self.host.receive.call_count, 3)
+        self.mock_sock.sendto.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
-    

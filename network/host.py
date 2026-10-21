@@ -1,4 +1,5 @@
 import socket
+import time
 
 from config import Config
 from packet import MAX_SIZE, Packet, PacketError
@@ -60,13 +61,81 @@ class Host:
         try:
             packet = Packet.from_bytes(data)
         except PacketError:
-            # Add protocol error logging later.
+            # Protocol error logging will be added later.
             return None
 
         if packet.dst != self.id:
             return None
 
         return packet
+
+    def probe(self, dst, payload, timeout=1.0):
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
+
+        expected_id = self.packet_id
+        deadline = time.monotonic() + timeout
+
+        self.send(payload, dst)
+
+        old_timeout = self.sock.gettimeout()
+
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+
+                self.sock.settimeout(remaining)
+
+                try:
+                    packet = self.receive()
+                except socket.timeout:
+                    return None
+
+                if packet is None:
+                    continue
+
+                if (
+                    packet.type == "RESPONSE"
+                    and packet.src == dst
+                    and packet.dst == self.id
+                    and packet.id == expected_id
+                ):
+                    return packet.payload
+        finally:
+            self.sock.settimeout(old_timeout)
+
+    def echo(self, packet):
+        if packet.type != "DATA":
+            return
+
+        response = Packet(
+            src=self.id,
+            dst=packet.src,
+            hop_limit=8,
+            type="RESPONSE",
+            id=packet.id,
+            payload=packet.payload,
+        )
+
+        self._send_packet(response.to_bytes())
+
+    def run(self):
+        while True:
+            try:
+                packet = self.receive()
+            except socket.timeout:
+                continue
+            except OSError:
+                # Socket was closed during shutdown.
+                break
+
+            if packet is None:
+                continue
+
+            if packet.type == "DATA":
+                self.echo(packet)
 
     def close(self):
         self.sock.close()
