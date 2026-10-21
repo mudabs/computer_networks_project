@@ -33,8 +33,11 @@ python3 main.py H2 --run-id baseline
 With the routers and H2 running, send one probe from H1:
 
 ```bash
-python3 main.py H1 --probe H2 --message "hello from H1" --timeout 3 --run-id baseline
+python3 main.py H1 --probe H2 --run-id baseline
 ```
+
+Enter your message at the terminal prompt and press Enter. The response timeout
+is fixed at 3 seconds (`PROBE_TIMEOUT` in `main.py`).
 
 The result is MATCHED only when the RESPONSE matches the source, destination,
 message ID and payload. A finite timeout prints TIMEOUT and returns exit status 1.
@@ -46,7 +49,7 @@ To initiate an exchange from H2, stop the H2 server, start the H1 server, and pr
 ```bash
 python3 main.py H1 --run-id reverse
 # In another terminal:
-python3 main.py H2 --probe H1 --message "hello from H2" --timeout 3 --run-id reverse
+python3 main.py H2 --probe H1 --run-id reverse
 ```
 
 Do not run a server and probe process for the same host simultaneously.

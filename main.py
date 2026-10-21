@@ -8,6 +8,8 @@ from config import Config
 from host import Host
 from router import Router
 
+PROBE_TIMEOUT = 3.0
+
 def parse_args(config):
     device_ids = tuple(config.data["devices"])
     parser = argparse.ArgumentParser(description="Mini-Internet device launcher")
@@ -38,8 +40,6 @@ def parse_args(config):
     )
 
     parser.add_argument("--probe", metavar="DEST", help="Send one probe from the selected host")
-    parser.add_argument("--message", default="hello", help="Probe payload")
-    parser.add_argument("--timeout", type=float, default=3.0, help="Response timeout in seconds")
     args = parser.parse_args()
     if args.probe:
         if args.device is None or config.get_device(args.device)["type"] != "host":
@@ -48,8 +48,6 @@ def parse_args(config):
             parser.error("--probe destination must be a configured host")
         if args.probe == args.device:
             parser.error("probe destination must differ from source")
-        if not 0 < args.timeout < float("inf"):
-            parser.error("--timeout must be finite and positive")
     return args
 
 
@@ -60,7 +58,7 @@ def configure_logging(level):
     )
 
 
-def run_device(device_id, config, run_id, probe=None, message="hello", timeout=3):
+def run_device(device_id, config, run_id, probe=None):
     device_type = config.get_device(device_id)["type"]
     if device_type == "host":
         device = Host(device_id, config, run_id=run_id)
@@ -70,7 +68,8 @@ def run_device(device_id, config, run_id, probe=None, message="hello", timeout=3
         raise ValueError(f"Unknown device type {device_type!r} for {device_id}")
     try:
         if probe:
-            result = device.probe(probe, message, timeout)
+            message = input(f"Message from {device_id} to {probe}: ")
+            result = device.probe(probe, message, timeout=PROBE_TIMEOUT)
             print("TIMEOUT" if result is None else f"MATCHED {result!r}")
             return 1 if result is None else 0
         device.run()
@@ -141,8 +140,8 @@ def main():
 
     try:
         return run_device(args.device, config, args.run_id,
-                          args.probe, args.message, args.timeout)
-    except KeyboardInterrupt:
+                          args.probe)
+    except (KeyboardInterrupt, EOFError):
         logging.info("Shutdown requested")
     except (OSError, KeyError, ValueError) as exc:
         logging.error("Could not start device: %s", exc)
