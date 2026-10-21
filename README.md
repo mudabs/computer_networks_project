@@ -1,145 +1,106 @@
 # Mini Internet
 
-CSCI 5500 Computer Networks, Fall 2026 - Group 1
+CSCI 5500 Computer Networks, Fall 2026 — Group 1.
+Python 3 is required; no third-party packages are needed.
+Run commands from the repository root.
 
-This repository contains an early implementation of the Mini Internet project. The intended network has two hosts and four routers communicating over UDP on one computer. The repository currently contains configuration and packet-building code, an early host class, and an unfinished router/integration prototype.
+## Start the network
 
-## Current status
-
-The codebase is not yet an end-to-end runnable network. The packet and configuration modules use the newer interfaces described below, while `network/router.py` and `network/tests/test_routers.py` still use an older packet/configuration interface. As a result, the documented router integration flow is currently blocked until those components are reconciled.
-
-The configured topology is:
-
-```text
-              B
-             / \
-            /   \
-H1 -------- A     D -------- H2
-            \   /
-             \ /
-              C
-```
-
-The links are represented as bidirectional links in `network/data/network.json`.
-
-## Repository layout
-
-| Path | Purpose |
-|---|---|
-| `network/config.py` | Loads the current device, address, link, and route data. |
-| `network/data/network.json` | Device types, UDP addresses, and physical/logical links. |
-| `network/data/routes.json` | Static destination-to-next-hop route entries. |
-| `network/packet.py` | Current `Packet` dataclass, validation, JSON serialization, and size checks. |
-| `network/host.py` | Early `Host` class that binds a UDP socket and can send fragmented data packets. |
-| `network/router.py` | Early router loop; currently uses missing legacy packet functions and the legacy config format. |
-| `network/tests/test_config.py` | Executable configuration validation script. |
-| `network/tests/test_host.py` | Exploratory host script; currently needs to be updated to the current `Host` API. |
-| `network/tests/test_routers.py` | Legacy integration script; currently needs to be updated to the current packet and config APIs. |
-| `network/info/PACKET.md` | Packet-format notes for the current packet interface. |
-| `network/info/ROUTERS.md` | Older router startup notes that still need to be revised. |
-| `network/config.json` | Legacy router prototype configuration. It is not the configuration source used by `network/config.py`. |
-| `Mini_Internet_Project.md` | Project description, requirements, and evaluation guidance. |
-
-## Requirements
-
-- Python 3
-- Local UDP ports `5001`, `5002`, and `6001` through `6004` available for the current configuration
-- No third-party Python packages are required by the current source files
-
-All configured addresses use `127.0.0.1`, so the network is intended to run on one computer once the router and host processes are integrated.
-
-## Current configuration
-
-`network/data/network.json` is the active topology configuration. It defines:
-
-- Hosts `H1` and `H2`
-- Routers `A`, `B`, `C`, and `D`
-- UDP addresses for all six devices
-- Links `H1-A`, `A-B`, `A-C`, `B-D`, `C-D`, and `D-H2`
-
-`network/data/routes.json` is the active static route data. Its default upper path is:
-
-```text
-H1 -> A -> B -> D -> H2
-H2 -> D -> B -> A -> H1
-```
-
-The lower path through `C` is present in the topology but is not the default route. The intended lower-path route change is to set `A`'s `H2` next hop to `C` and `D`'s `H1` next hop to `C` in `network/data/routes.json`. The router process does not yet consume this file, so changing it alone does not currently produce a working end-to-end run.
-
-## Current packet format
-
-`network/packet.py` represents packets with six fields:
-
-| Field | Meaning |
-|---|---|
-| `src` | Original virtual source, such as `H1` |
-| `dst` | Final virtual destination, such as `H2` |
-| `hop_limit` | Forwarding hop limit, from `1` through `8` |
-| `type` | Currently `DATA` or `RESPONSE` |
-| `id` | Unsigned 32-bit message identifier |
-| `payload` | String application data |
-
-Packets are serialized as UTF-8 JSON. The complete serialized packet must be no larger than 1,200 bytes. Use `Packet.to_bytes()` to serialize and `Packet.from_bytes()` to parse and validate.
-
-The older `ttl`, `PROBE`, `ECHO`, `make_packet`, and `parse_packet` interface is still referenced by the unfinished router prototype and legacy integration script, but it is not part of the current `Packet` API.
-
-## Checks that currently run
-
-From the repository root:
+`data/network.json` defines devices, UDP addresses, bidirectional topology links,
+and optional directed link conditions. `data/routes.json` defines static routes.
+All configured devices run on localhost. The default path is H1–A–B–D–H2;
+C supplies an alternate path. To use C, change A's H2 route and D's H1 route to C.
+Restart devices after changing configuration.
 
 ```bash
-python -m compileall -q network
+python3 main.py --all --run-id baseline
 ```
 
-The following command runs the current configuration checks. The explicit path insertion is required because the repository does not yet define an installable Python package or test runner configuration:
+This starts every configured device as an echo server. Ctrl+C stops the network.
+For probes, start individual devices instead, because a probe needs to bind its
+source host's port. In separate terminals start:
 
 ```bash
-python -c "import sys; sys.path.insert(0, 'network'); exec(open('network/tests/test_config.py', encoding='utf-8').read())"
+python3 main.py A --run-id baseline
+python3 main.py B --run-id baseline
+python3 main.py C --run-id baseline
+python3 main.py D --run-id baseline
+python3 main.py H2 --run-id baseline
 ```
-
-A basic packet serialization check is:
-
-```bash
-python -c "import sys; sys.path.insert(0, 'network'); from packet import Packet; print(Packet('H1', 'H2', 8, 'DATA', 0, 'hello').to_bytes().decode())"
-```
-
-These checks verify syntax, configuration structure, and packet serialization only. They do not prove that packets can traverse the router topology.
-
-## Known blockers
-
-The end-to-end network still requires:
-
-1. Updating `network/router.py` to use `Packet.from_bytes()` and `Packet.to_bytes()`, `hop_limit`, and the current configuration loader.
-2. Updating or replacing `network/tests/test_routers.py` so it uses the current packet and route APIs.
-3. Adding runnable router entry points or a command-line router configuration instead of relying on the missing `RouterA.py` through `RouterD.py` files.
-4. Completing host receive/delivery behavior and correcting `network/tests/test_host.py` to use `Host.neighbor`.
-5. Enforcing configured neighbors and validating route entries before forwarding.
-6. Adding a real end-to-end test for both directions and both static paths.
-7. Adding the required hop-limit, error, loss, delay, logging, repeated-baseline, and Wireshark demonstrations from the project requirements.
-
-Until these items are addressed, this repository should be treated as an implementation checkpoint rather than a runnable mini-internet demonstration.
-
 
 ## Basic host communication (3.4)
 
-From the repository root, start A, B, C and D in separate terminals with
-`python3 main.py A` (substitute each router ID). Start the destination host with
-`python3 main.py H2`, then send one probe:
+With the routers and H2 running, send one probe from H1:
 
 ```bash
 python3 main.py H1 --probe H2 --message "hello from H1" --timeout 3 --run-id baseline
 ```
 
-The command prints MATCHED only for a RESPONSE with the expected source,
-message ID and payload. Otherwise it prints TIMEOUT and exits with status 1.
-Each probe sends once; there are no retries. To demonstrate the reverse direction,
-stop the H2 server, start `python3 main.py H1`, and run:
+The result is MATCHED only when the RESPONSE matches the source, destination,
+message ID and payload. A finite timeout prints TIMEOUT and returns exit status 1.
+Each probe is transmitted once, with no retries. Echoes are separate RESPONSE
+packets routed back through the network.
+
+To initiate an exchange from H2, stop the H2 server, start the H1 server, and probe:
 
 ```bash
+python3 main.py H1 --run-id reverse
+# In another terminal:
 python3 main.py H2 --probe H1 --message "hello from H2" --timeout 3 --run-id reverse
 ```
 
-Do not run a server and probe process for the same host simultaneously: both bind
-that host's port. `--all` starts both echo servers, so use individual device startup
-for these probe commands. Run automated isolated UDP demonstrations with
-`python3 -m unittest discover -s tests`.
+Do not run a server and probe process for the same host simultaneously.
+
+## Network conditions and logs (3.5)
+
+The default `conditions: []` in `data/network.json` means no injected loss or delay.
+For example, replace that array with:
+
+```json
+"conditions": [
+  {"from": "A", "to": "B", "loss": 0.25, "delay_ms": 100, "seed": 42}
+]
+```
+
+This applies a 25% drop probability and adds 100 ms delivery delay to surviving
+packets on **A→B only**. The reverse B→A link is unaffected. To condition both
+directions, add a second rule with `from: B` and `to: A`. Rules must identify
+configured neighbors; loss is in [0, 1], delay is nonnegative milliseconds, and
+seed is an integer. Each directed link has its own seeded random sequence.
+The same rules apply to DATA and RESPONSE packets, including links sent by hosts.
+Repeated seeds reproduce decisions for the same ordered traffic on each link.
+
+Loss is decided once per outgoing packet before delay. A worker schedules delayed
+packets using monotonic deadlines and a priority queue, without sleeping in the
+host/router receive loop. Other outgoing links remain usable. Shutdown cancels
+pending deliveries and logs the drops. This implements added delay, not a fixed-rate
+congestion model. A reply that arrives after the probe deadline still counts as a
+missing reply for that probe.
+
+Use the same `--run-id` in every terminal. INFO logs include timestamps, device,
+message ID/type, virtual source/destination, next hop and hop limit. Router receive,
+forward, send and drop events let you follow DATA H1→A→B→D→H2 and RESPONSE
+H2→D→B→A→H1. Host `submit` means the packet was handed to link conditions;
+`send` means the UDP datagram was actually sent. Condition events record link,
+seed, loss and delay; drops distinguish injected loss and forwarding errors.
+Fields unavailable for malformed packets are `-`.
+
+Capture a device's output with `2>&1 | tee device.log`, or collect all six server
+logs from `--all` in one terminal. `info/baseline_trace.log` contains a real isolated
+UDP request/response trace with timestamps and run ID `trace`, using ephemeral ports.
+
+## Verification
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+Tests cover both initiating hosts, the alternate path, matching payloads, timeouts,
+request/response loss, seeded repeatability, invalid rules, nonblocking delays,
+and a complete router trace. Integration tests use ephemeral localhost ports,
+so they do not conflict with running devices.
+
+`packet.py` validates UTF-8 JSON packets with src, dst, hop_limit (1–8), type
+(DATA or RESPONSE), id (unsigned 32-bit), and a string payload. The serialized
+packet limit is 1,200 bytes. See `Mini_Internet_Project.md` for the full assignment;
+remaining extensions are outside these baseline communication features.

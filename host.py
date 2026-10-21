@@ -4,6 +4,7 @@ import socket
 import time
 
 from config import Config
+from link import LinkSender, event
 from packet import MAX_SIZE, Packet, PacketError
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,8 @@ class Host:
             )
             raise
 
+        self.sender = LinkSender(self.sock, config, self.id, run_id)
+
         logger.info(
             "run_id=%s device=%s event=start address=%s:%s neighbor=%s",
             self.run_id,
@@ -49,10 +52,7 @@ class Host:
         )
 
     def _send_packet(self, packet_bytes):
-        neighbor_address = self.config.get_address(self.neighbor)
-        endpoint = (neighbor_address["ip"], neighbor_address["port"])
-
-        self.sock.sendto(packet_bytes, endpoint)
+        self.sender.send(packet_bytes, self.neighbor)
 
     def send(self, data, dst):
         packet = Packet(
@@ -68,7 +68,7 @@ class Host:
         self._send_packet(packet_bytes)
 
         logger.info(
-            "run_id=%s device=%s event=send msg_id=%s type=%s "
+            "run_id=%s device=%s event=submit msg_id=%s type=%s "
             "src=%s dst=%s next_hop=%s hop_limit=%s bytes=%s",
             self.run_id,
             self.id,
@@ -89,7 +89,7 @@ class Host:
         if len(data) > MAX_SIZE:
             logger.warning(
                 "run_id=%s device=%s event=drop reason=oversized_datagram "
-                "sender=%s bytes=%s limit=%s",
+                "sender=%s bytes=%s limit=%s msg_id=- type=- src=- dst=- next_hop=- hop_limit=-",
                 self.run_id,
                 self.id,
                 sender,
@@ -110,7 +110,7 @@ class Host:
             packet = Packet.from_bytes(data)
         except PacketError:
             logger.warning(
-                "run_id=%s device=%s event=drop reason=invalid_packet",
+                "run_id=%s device=%s event=drop reason=invalid_packet msg_id=- type=- src=- dst=- next_hop=- hop_limit=-",
                 self.run_id,
                 self.id,
             )
@@ -119,7 +119,7 @@ class Host:
         if packet.dst != self.id:
             logger.warning(
                 "run_id=%s device=%s event=drop reason=wrong_destination "
-                "msg_id=%s type=%s src=%s dst=%s hop_limit=%s",
+                "msg_id=%s type=%s src=%s dst=%s hop_limit=%s next_hop=-",
                 self.run_id,
                 self.id,
                 packet.id,
@@ -132,7 +132,7 @@ class Host:
 
         logger.info(
             "run_id=%s device=%s event=receive msg_id=%s type=%s "
-            "src=%s dst=%s hop_limit=%s bytes=%s",
+            "src=%s dst=%s hop_limit=%s bytes=%s next_hop=-",
             self.run_id,
             self.id,
             packet.id,
@@ -162,7 +162,7 @@ class Host:
                 if remaining <= 0:
                     logger.warning(
                         "run_id=%s device=%s event=timeout msg_id=%s "
-                        "type=DATA src=%s dst=%s timeout_seconds=%s",
+                        "type=DATA src=%s dst=%s timeout_seconds=%s next_hop=" + self.neighbor + " hop_limit=8",
                         self.run_id,
                         self.id,
                         expected_id,
@@ -179,7 +179,7 @@ class Host:
                 except socket.timeout:
                     logger.warning(
                         "run_id=%s device=%s event=timeout msg_id=%s "
-                        "type=DATA src=%s dst=%s timeout_seconds=%s",
+                        "type=DATA src=%s dst=%s timeout_seconds=%s next_hop=" + self.neighbor + " hop_limit=8",
                         self.run_id,
                         self.id,
                         expected_id,
@@ -203,15 +203,7 @@ class Host:
                     and packet.id == expected_id
                     and packet.payload == payload
                 ):
-                    logger.info(
-                        "run_id=%s device=%s event=probe_success "
-                        "msg_id=%s type=RESPONSE src=%s dst=%s",
-                        self.run_id,
-                        self.id,
-                        packet.id,
-                        packet.src,
-                        packet.dst,
-                    )
+                    event(self.run_id, self.id, "probe_success", packet)
                     return packet.payload
 
         finally:
@@ -234,7 +226,7 @@ class Host:
         self._send_packet(response_bytes)
 
         logger.info(
-            "run_id=%s device=%s event=send msg_id=%s type=%s "
+            "run_id=%s device=%s event=submit msg_id=%s type=%s "
             "src=%s dst=%s next_hop=%s hop_limit=%s bytes=%s",
             self.run_id,
             self.id,
@@ -279,4 +271,5 @@ class Host:
                     )
 
     def close(self):
+        self.sender.close()
         self.sock.close()

@@ -1,0 +1,35 @@
+2026-10-21 12:53:41,648 INFO link run_id=trace device=A event=start msg_id=- type=- src=- dst=- next_hop=- hop_limit=-
+2026-10-21 12:53:41,648 INFO link run_id=trace device=B event=start msg_id=- type=- src=- dst=- next_hop=- hop_limit=-
+2026-10-21 12:53:41,649 INFO link run_id=trace device=C event=start msg_id=- type=- src=- dst=- next_hop=- hop_limit=-
+2026-10-21 12:53:41,649 INFO link run_id=trace device=D event=start msg_id=- type=- src=- dst=- next_hop=- hop_limit=-
+2026-10-21 12:53:41,649 INFO host run_id=trace device=H2 event=start address=127.0.0.1:64424 neighbor=D
+2026-10-21 12:53:41,649 INFO host run_id=trace device=H1 event=start address=127.0.0.1:63645 neighbor=A
+2026-10-21 12:53:41,649 INFO link run_id=trace device=H1 event=send msg_id=0 type=DATA src=H1 dst=H2 next_hop=A hop_limit=8
+2026-10-21 12:53:41,649 INFO host run_id=trace device=H1 event=submit msg_id=0 type=DATA src=H1 dst=H2 next_hop=A hop_limit=8 bytes=87
+2026-10-21 12:53:41,649 INFO link run_id=trace device=A event=receive msg_id=0 type=DATA src=H1 dst=H2 next_hop=B hop_limit=8
+2026-10-21 12:53:41,649 INFO link run_id=trace device=A event=forward msg_id=0 type=DATA src=H1 dst=H2 next_hop=B hop_limit=7
+2026-10-21 12:53:41,649 INFO link run_id=trace device=A event=send msg_id=0 type=DATA src=H1 dst=H2 next_hop=B hop_limit=7
+2026-10-21 12:53:41,649 INFO link run_id=trace device=B event=receive msg_id=0 type=DATA src=H1 dst=H2 next_hop=D hop_limit=7
+2026-10-21 12:53:41,649 INFO link run_id=trace device=B event=forward msg_id=0 type=DATA src=H1 dst=H2 next_hop=D hop_limit=6
+2026-10-21 12:53:41,649 INFO link run_id=trace device=B event=send msg_id=0 type=DATA src=H1 dst=H2 next_hop=D hop_limit=6
+2026-10-21 12:53:41,649 INFO link run_id=trace device=D event=receive msg_id=0 type=DATA src=H1 dst=H2 next_hop=H2 hop_limit=6
+2026-10-21 12:53:41,649 INFO link run_id=trace device=D event=forward msg_id=0 type=DATA src=H1 dst=H2 next_hop=H2 hop_limit=5
+2026-10-21 12:53:41,650 INFO link run_id=trace device=D event=send msg_id=0 type=DATA src=H1 dst=H2 next_hop=H2 hop_limit=5
+2026-10-21 12:53:41,650 INFO host run_id=trace device=H2 event=receive msg_id=0 type=DATA src=H1 dst=H2 hop_limit=5 bytes=87 next_hop=-
+2026-10-21 12:53:41,650 INFO link run_id=trace device=H2 event=send msg_id=0 type=RESPONSE src=H2 dst=H1 next_hop=D hop_limit=8
+2026-10-21 12:53:41,650 INFO host run_id=trace device=H2 event=submit msg_id=0 type=RESPONSE src=H2 dst=H1 next_hop=D hop_limit=8 bytes=91
+2026-10-21 12:53:41,650 INFO link run_id=trace device=D event=receive msg_id=0 type=RESPONSE src=H2 dst=H1 next_hop=B hop_limit=8
+2026-10-21 12:53:41,650 INFO link run_id=trace device=D event=forward msg_id=0 type=RESPONSE src=H2 dst=H1 next_hop=B hop_limit=7
+2026-10-21 12:53:41,650 INFO link run_id=trace device=D event=send msg_id=0 type=RESPONSE src=H2 dst=H1 next_hop=B hop_limit=7
+2026-10-21 12:53:41,650 INFO link run_id=trace device=B event=receive msg_id=0 type=RESPONSE src=H2 dst=H1 next_hop=A hop_limit=7
+2026-10-21 12:53:41,650 INFO link run_id=trace device=B event=forward msg_id=0 type=RESPONSE src=H2 dst=H1 next_hop=A hop_limit=6
+2026-10-21 12:53:41,650 INFO link run_id=trace device=B event=send msg_id=0 type=RESPONSE src=H2 dst=H1 next_hop=A hop_limit=6
+2026-10-21 12:53:41,650 INFO link run_id=trace device=A event=receive msg_id=0 type=RESPONSE src=H2 dst=H1 next_hop=H1 hop_limit=6
+2026-10-21 12:53:41,650 INFO link run_id=trace device=A event=forward msg_id=0 type=RESPONSE src=H2 dst=H1 next_hop=H1 hop_limit=5
+2026-10-21 12:53:41,650 INFO link run_id=trace device=A event=send msg_id=0 type=RESPONSE src=H2 dst=H1 next_hop=H1 hop_limit=5
+2026-10-21 12:53:41,650 INFO host run_id=trace device=H1 event=receive msg_id=0 type=RESPONSE src=H2 dst=H1 hop_limit=5 bytes=91 next_hop=-
+2026-10-21 12:53:41,650 INFO link run_id=trace device=H1 event=probe_success msg_id=0 type=RESPONSE src=H2 dst=H1 next_hop=- hop_limit=5
+2026-10-21 12:53:41,662 INFO link run_id=trace device=A event=shutdown msg_id=- type=- src=- dst=- next_hop=- hop_limit=-
+2026-10-21 12:53:41,662 INFO link run_id=trace device=B event=shutdown msg_id=- type=- src=- dst=- next_hop=- hop_limit=-
+2026-10-21 12:53:41,662 INFO link run_id=trace device=C event=shutdown msg_id=- type=- src=- dst=- next_hop=- hop_limit=-
+2026-10-21 12:53:41,662 INFO link run_id=trace device=D event=shutdown msg_id=- type=- src=- dst=- next_hop=- hop_limit=-
