@@ -5,11 +5,13 @@ from pathlib import Path
 class Config:
     def __init__(self):
         self.base_dir = Path(__file__).resolve().parent
+        data_dir = self.base_dir / "data"
 
-        network_path = self.base_dir / "data" / "network.json"
-
-        with open(network_path) as f:
+        with open(data_dir / "network.json") as f:
             self.data = json.load(f)
+
+        with open(data_dir / "routes.json") as f:
+            self.route_data = json.load(f)
 
     def get_device(self, device_id):
         return self.data["devices"][device_id]
@@ -25,9 +27,4 @@ class Config:
         ]
 
     def get_routes(self, device_id):
-        routes_path = self.base_dir / "data" / "routes.json"
-
-        with open(routes_path) as f:
-            route_data = json.load(f)
-
-        return route_data[device_id]
+        return self.route_data[device_id]

@@ -1,10 +1,10 @@
 from config import Config
-from packet import Packet, PacketSizeError
+from packet import Packet, PacketError
 import socket
 
 
 class Host:
-    def __init__(self, host_id, config):
+    def __init__(self, host_id, config: Config):
         if config.get_device(host_id)["type"] != "host":
             raise ValueError(f"'{host_id}' is not a host")
 
@@ -18,29 +18,42 @@ class Host:
             raise ValueError("Host must have exactly one neighbor")
 
         self.neighbor = neighbors[0]
+
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind((self.address["ip"], self.address["port"]))
+        try:
+            self.sock.bind((self.address["ip"], self.address["port"]))
+        except OSError:
+            self.sock.close()
+            raise
 
     def _send_packet(self, packet_bytes):
         self.sock.sendto(packet_bytes, self.config.get_address(self.neighbor))
 
     def send(self, data, dst):
-        remaining = data
-        while remaining:
-            candidate = remaining
-            packet = Packet(self.id, dst, 8, "DATA", self.packet_id, candidate)
-            while True:
-                try:
-                    packet_bytes = packet.to_bytes()
-                    self._send_packet(packet_bytes)
-                    break
-                except PacketSizeError:
-                    candidate = candidate[: len(candidate) // 2 + len(candidate) % 2]
-                    packet = Packet(self.id, dst, 8, "DATA", self.packet_id, candidate)
+        packet = Packet(self.id, dst, 8, "DATA", self.packet_id, data)
 
-            remaining = remaining[len(candidate) :]
-        self.packet_id += 1
-        self.packet_id %= 4294967296
+        packet_bytes = packet.to_bytes()
+        self._send_packet(packet_bytes)
 
-    def receive(self, data):
+        self.packet_id = (self.packet_id + 1) % (2**32)
+
+    def _receive_packet(self):
+        data, _ = self.sock.recvfrom(1200)
         return data
+
+    def receive(self):
+        data = self._receive_packet()
+
+        try:
+            packet = Packet.from_bytes(data)
+        except PacketError:
+            # Add error logging later.
+            return None
+
+        if packet.dst != self.id:
+            return None
+
+        return packet.payload
+
+    def close(self):
+        self.sock.close()
