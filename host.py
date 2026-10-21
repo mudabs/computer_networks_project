@@ -1,5 +1,4 @@
 import math
-import logging
 import socket
 import time
 
@@ -7,14 +6,11 @@ from config import Config
 from link import LinkSender, event
 from packet import MAX_SIZE, Packet, PacketError
 
-logger = logging.getLogger(__name__)
-
 
 class Host:
     def __init__(self, host_id, config: Config, run_id="default"):
         if config.get_device(host_id)["type"] != "host":
             raise ValueError(f"'{host_id}' is not a host")
-
         self.id = host_id
         self.config = config
         self.address = config.get_address(self.id)
@@ -24,220 +20,82 @@ class Host:
         neighbors = config.get_neighbors(self.id)
         if len(neighbors) != 1:
             raise ValueError("Host must have exactly one neighbor")
-
         self.neighbor = neighbors[0]
-
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
         try:
             self.sock.bind((self.address["ip"], self.address["port"]))
         except OSError:
             self.sock.close()
-            logger.exception(
-                "run_id=%s device=%s event=bind_error",
-                self.run_id,
-                self.id,
-            )
             raise
-
         self.sender = LinkSender(self.sock, config, self.id, run_id)
-
-        logger.info(
-            "run_id=%s device=%s event=start address=%s:%s neighbor=%s",
-            self.run_id,
-            self.id,
-            self.address["ip"],
-            self.address["port"],
-            self.neighbor,
-        )
+        event(run_id, self.id, "start", next_hop=self.neighbor)
 
     def _send_packet(self, packet_bytes):
         self.sender.send(packet_bytes, self.neighbor)
 
     def send(self, data, dst):
-        packet = Packet(
-            src=self.id,
-            dst=dst,
-            hop_limit=8,
-            type="DATA",
-            id=self.packet_id,
-            payload=data,
-        )
-
-        packet_bytes = packet.to_bytes()
-        self._send_packet(packet_bytes)
-
-        logger.info(
-            "run_id=%s device=%s event=submit msg_id=%s type=%s "
-            "src=%s dst=%s next_hop=%s hop_limit=%s bytes=%s",
-            self.run_id,
-            self.id,
-            packet.id,
-            packet.type,
-            packet.src,
-            packet.dst,
-            self.neighbor,
-            packet.hop_limit,
-            len(packet_bytes),
-        )
-
+        packet = Packet(self.id, dst, 8, "DATA", self.packet_id, data)
+        self._send_packet(packet.to_bytes())
         self.packet_id = (self.packet_id + 1) % (2**32)
 
     def _receive_packet(self):
-        data, sender = self.sock.recvfrom(MAX_SIZE + 1)
-
+        data, _ = self.sock.recvfrom(MAX_SIZE + 1)
         if len(data) > MAX_SIZE:
-            logger.warning(
-                "run_id=%s device=%s event=drop reason=oversized_datagram "
-                "sender=%s bytes=%s limit=%s msg_id=- type=- src=- dst=- next_hop=- hop_limit=-",
-                self.run_id,
-                self.id,
-                sender,
-                len(data),
-                MAX_SIZE,
-            )
+            event(self.run_id, self.id, "drop", reason="oversized_datagram")
             return None
-
         return data
 
     def receive(self):
         data = self._receive_packet()
-
         if data is None:
             return None
-
         try:
             packet = Packet.from_bytes(data)
         except PacketError:
-            logger.warning(
-                "run_id=%s device=%s event=drop reason=invalid_packet msg_id=- type=- src=- dst=- next_hop=- hop_limit=-",
-                self.run_id,
-                self.id,
-            )
+            event(self.run_id, self.id, "drop", reason="invalid_packet")
             return None
-
         if packet.dst != self.id:
-            logger.warning(
-                "run_id=%s device=%s event=drop reason=wrong_destination "
-                "msg_id=%s type=%s src=%s dst=%s hop_limit=%s next_hop=-",
-                self.run_id,
-                self.id,
-                packet.id,
-                packet.type,
-                packet.src,
-                packet.dst,
-                packet.hop_limit,
-            )
+            event(self.run_id, self.id, "drop", packet, reason="wrong_destination")
             return None
-
-        logger.info(
-            "run_id=%s device=%s event=receive msg_id=%s type=%s "
-            "src=%s dst=%s hop_limit=%s bytes=%s next_hop=-",
-            self.run_id,
-            self.id,
-            packet.id,
-            packet.type,
-            packet.src,
-            packet.dst,
-            packet.hop_limit,
-            len(data),
-        )
-
+        event(self.run_id, self.id, "receive", packet)
         return packet
 
     def probe(self, dst, payload, timeout=1.0):
         if not math.isfinite(timeout) or timeout <= 0:
-            raise ValueError("timeout must be positive")
-
-        expected_id = self.packet_id
+            raise ValueError("timeout must be finite and positive")
+        request = Packet(self.id, dst, 8, "DATA", self.packet_id, payload)
         deadline = time.monotonic() + timeout
-
-        self.send(payload, dst)
-
+        self.send(payload, dst)  # Baseline: send once, without retransmission.
         old_timeout = self.sock.gettimeout()
-
         try:
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    logger.warning(
-                        "run_id=%s device=%s event=timeout msg_id=%s "
-                        "type=DATA src=%s dst=%s timeout_seconds=%s next_hop=" + self.neighbor + " hop_limit=8",
-                        self.run_id,
-                        self.id,
-                        expected_id,
-                        self.id,
-                        dst,
-                        timeout,
-                    )
-                    return None
-
+                    break
                 self.sock.settimeout(remaining)
-
                 try:
                     packet = self.receive()
                 except socket.timeout:
-                    logger.warning(
-                        "run_id=%s device=%s event=timeout msg_id=%s "
-                        "type=DATA src=%s dst=%s timeout_seconds=%s next_hop=" + self.neighbor + " hop_limit=8",
-                        self.run_id,
-                        self.id,
-                        expected_id,
-                        self.id,
-                        dst,
-                        timeout,
-                    )
-                    return None
-
+                    break
                 if packet is None:
                     continue
-
                 if packet.type == "DATA":
                     self.echo(packet)
-                    continue
-
-                if (
-                    packet.type == "RESPONSE"
-                    and packet.src == dst
-                    and packet.dst == self.id
-                    and packet.id == expected_id
-                    and packet.payload == payload
-                ):
+                elif (packet.type == "RESPONSE"
+                      and packet.src == dst and packet.dst == self.id
+                      and packet.id == request.id and packet.payload == payload):
                     event(self.run_id, self.id, "probe_success", packet)
                     return packet.payload
-
+            event(self.run_id, self.id, "timeout", request, self.neighbor,
+                  timeout_seconds=timeout)
+            return None
         finally:
             self.sock.settimeout(old_timeout)
 
     def echo(self, packet):
-        if packet.type != "DATA":
-            return
-
-        response = Packet(
-            src=self.id,
-            dst=packet.src,
-            hop_limit=8,
-            type="RESPONSE",
-            id=packet.id,
-            payload=packet.payload,
-        )
-
-        response_bytes = response.to_bytes()
-        self._send_packet(response_bytes)
-
-        logger.info(
-            "run_id=%s device=%s event=submit msg_id=%s type=%s "
-            "src=%s dst=%s next_hop=%s hop_limit=%s bytes=%s",
-            self.run_id,
-            self.id,
-            response.id,
-            response.type,
-            response.src,
-            response.dst,
-            self.neighbor,
-            response.hop_limit,
-            len(response_bytes),
-        )
+        if packet.type == "DATA":
+            response = Packet(self.id, packet.src, 8, "RESPONSE", packet.id, packet.payload)
+            self._send_packet(response.to_bytes())
 
     def run(self):
         while True:
@@ -246,30 +104,11 @@ class Host:
             except socket.timeout:
                 continue
             except OSError:
-                logger.info(
-                    "run_id=%s device=%s event=shutdown",
-                    self.run_id,
-                    self.id,
-                )
                 break
-
-            if packet is None:
-                continue
-
-            if packet.type == "DATA":
-                try:
-                    self.echo(packet)
-                except (OSError, PacketError):
-                    logger.exception(
-                        "run_id=%s device=%s event=echo_error "
-                        "msg_id=%s src=%s dst=%s",
-                        self.run_id,
-                        self.id,
-                        packet.id,
-                        packet.src,
-                        packet.dst,
-                    )
+            if packet is not None:
+                self.echo(packet)
 
     def close(self):
         self.sender.close()
         self.sock.close()
+        event(self.run_id, self.id, "shutdown")
