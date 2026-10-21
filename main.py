@@ -8,23 +8,20 @@ from config import Config
 from host import Host
 from router import Router
 
-DEVICES = ("H1", "H2", "A", "B", "C", "D")
-
-
-def parse_args():
+def parse_args(device_ids):
     parser = argparse.ArgumentParser(description="Mini-Internet device launcher")
 
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
         "device",
         nargs="?",
-        choices=DEVICES,
+        choices=device_ids,
         help="Device to start individually",
     )
     group.add_argument(
         "--all",
         action="store_true",
-        help="Start all six devices as separate processes",
+        help="Start all devices in data/network.json as separate processes",
     )
 
     parser.add_argument(
@@ -67,11 +64,11 @@ def run_device(device_id, config, run_id):
         logging.info("Stopped %s", device_id)
 
 
-def run_all(run_id, log_level):
+def run_all(device_ids, run_id, log_level):
     processes = []
 
     try:
-        for device_id in DEVICES:
+        for device_id in device_ids:
             process = subprocess.Popen(
                 [
                     sys.executable,
@@ -114,18 +111,18 @@ def run_all(run_id, log_level):
 
 
 def main():
-    args = parse_args()
+    config = Config()
+    device_ids = tuple(config.data["devices"])
+    args = parse_args(device_ids)
     configure_logging(args.log_level)
 
     if args.all:
-        run_all(args.run_id, args.log_level)
+        run_all(device_ids, args.run_id, args.log_level)
         return 0
 
     if args.device is None:
         logging.error("Specify a device ID or use --all")
         return 2
-
-    config = Config()
 
     try:
         run_device(args.device, config, args.run_id)
