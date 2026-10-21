@@ -1,3 +1,4 @@
+import math
 import logging
 import socket
 import time
@@ -145,7 +146,7 @@ class Host:
         return packet
 
     def probe(self, dst, payload, timeout=1.0):
-        if timeout <= 0:
+        if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be positive")
 
         expected_id = self.packet_id
@@ -191,11 +192,16 @@ class Host:
                 if packet is None:
                     continue
 
+                if packet.type == "DATA":
+                    self.echo(packet)
+                    continue
+
                 if (
                     packet.type == "RESPONSE"
                     and packet.src == dst
                     and packet.dst == self.id
                     and packet.id == expected_id
+                    and packet.payload == payload
                 ):
                     logger.info(
                         "run_id=%s device=%s event=probe_success "

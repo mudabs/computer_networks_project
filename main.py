@@ -36,7 +36,21 @@ def parse_args(device_ids):
         help="Logging verbosity",
     )
 
-    return parser.parse_args()
+    parser.add_argument("--probe", metavar="DEST", help="Send one probe from the selected host")
+    parser.add_argument("--message", default="hello", help="Probe payload")
+    parser.add_argument("--timeout", type=float, default=3.0, help="Response timeout in seconds")
+    args = parser.parse_args()
+    if args.probe:
+        config = Config()
+        if args.device is None or config.get_device(args.device)["type"] != "host":
+            parser.error("--probe requires a source host device")
+        if args.probe not in device_ids or config.get_device(args.probe)["type"] != "host":
+            parser.error("--probe destination must be a configured host")
+        if args.probe == args.device:
+            parser.error("probe destination must differ from source")
+        if not 0 < args.timeout < float("inf"):
+            parser.error("--timeout must be finite and positive")
+    return args
 
 
 def configure_logging(level):
@@ -125,6 +139,15 @@ def main():
         return 2
 
     try:
+        if args.probe:
+            host = Host(args.device, config, run_id=args.run_id)
+            try:
+                result = host.probe(args.probe, args.message, args.timeout)
+                print(f"{args.device} -> {args.probe}: " +
+                      ("TIMEOUT (no matching response)" if result is None else f"MATCHED {result!r}"))
+                return 1 if result is None else 0
+            finally:
+                host.close()
         run_device(args.device, config, args.run_id)
     except KeyboardInterrupt:
         logging.info("Shutdown requested")
