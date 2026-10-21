@@ -80,8 +80,7 @@ missing reply for that probe.
 Use the same `--run-id` in every terminal. INFO logs include timestamps, device,
 message ID/type, virtual source/destination, next hop and hop limit. Router receive,
 forward, send and drop events let you follow DATA H1→A→B→D→H2 and RESPONSE
-H2→D→B→A→H1. Host `submit` means the packet was handed to link conditions;
-`send` means the UDP datagram was actually sent. Condition events record link,
+H2→D→B→A→H1. `send` means the UDP datagram was actually sent. Condition events record link,
 seed, loss and delay; drops distinguish injected loss and forwarding errors.
 Fields unavailable for malformed packets are `-`.
 

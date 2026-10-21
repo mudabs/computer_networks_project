@@ -8,7 +8,8 @@ from config import Config
 from host import Host
 from router import Router
 
-def parse_args(device_ids):
+def parse_args(config):
+    device_ids = tuple(config.data["devices"])
     parser = argparse.ArgumentParser(description="Mini-Internet device launcher")
 
     group = parser.add_mutually_exclusive_group()
@@ -41,7 +42,6 @@ def parse_args(device_ids):
     parser.add_argument("--timeout", type=float, default=3.0, help="Response timeout in seconds")
     args = parser.parse_args()
     if args.probe:
-        config = Config()
         if args.device is None or config.get_device(args.device)["type"] != "host":
             parser.error("--probe requires a source host device")
         if args.probe not in device_ids or config.get_device(args.probe)["type"] != "host":
@@ -60,22 +60,23 @@ def configure_logging(level):
     )
 
 
-def run_device(device_id, config, run_id):
+def run_device(device_id, config, run_id, probe=None, message="hello", timeout=3):
     device_type = config.get_device(device_id)["type"]
-
     if device_type == "host":
         device = Host(device_id, config, run_id=run_id)
     elif device_type == "router":
         device = Router(device_id, config, run_id=run_id)
     else:
         raise ValueError(f"Unknown device type {device_type!r} for {device_id}")
-
     try:
-        logging.info("Starting %s (%s)", device_id, device_type)
+        if probe:
+            result = device.probe(probe, message, timeout)
+            print("TIMEOUT" if result is None else f"MATCHED {result!r}")
+            return 1 if result is None else 0
         device.run()
+        return 0
     finally:
         device.close()
-        logging.info("Stopped %s", device_id)
 
 
 def run_all(device_ids, run_id, log_level):
@@ -127,7 +128,7 @@ def run_all(device_ids, run_id, log_level):
 def main():
     config = Config()
     device_ids = tuple(config.data["devices"])
-    args = parse_args(device_ids)
+    args = parse_args(config)
     configure_logging(args.log_level)
 
     if args.all:
@@ -139,16 +140,8 @@ def main():
         return 2
 
     try:
-        if args.probe:
-            host = Host(args.device, config, run_id=args.run_id)
-            try:
-                result = host.probe(args.probe, args.message, args.timeout)
-                print(f"{args.device} -> {args.probe}: " +
-                      ("TIMEOUT (no matching response)" if result is None else f"MATCHED {result!r}"))
-                return 1 if result is None else 0
-            finally:
-                host.close()
-        run_device(args.device, config, args.run_id)
+        return run_device(args.device, config, args.run_id,
+                          args.probe, args.message, args.timeout)
     except KeyboardInterrupt:
         logging.info("Shutdown requested")
     except (OSError, KeyError, ValueError) as exc:
