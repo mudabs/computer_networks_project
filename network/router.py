@@ -1,44 +1,144 @@
-import json
+# import json
+# import socket
+
+# from packet import MAX_SIZE, parse_packet
+
+# NAME = "A"
+
+# config = json.load(open("config.json"))
+# table = config[NAME]["table"]   # destination -> next hop
+
+
+# def address_of(device):
+#     return ("127.0.0.1", config[device]["port"])
+
+
+# sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+# sock.bind(address_of(NAME))
+# print(f"Router {NAME} running on port {config[NAME]['port']}")
+
+# while True:
+#     try:
+#         data, sender = sock.recvfrom(MAX_SIZE + 1)
+#     except ConnectionResetError:   # Windows: a neighbor is not running yet
+#         continue
+
+#     pkt = parse_packet(data)
+#     if pkt is None:
+#         print(f"[{NAME}] DROP invalid packet")
+#         continue
+
+#     print(f"[{NAME}] RECV id={pkt['id']} {pkt['src']}->{pkt['dst']} ttl={pkt['ttl']}")
+
+#     if pkt["ttl"] <= 1:
+#         print(f"[{NAME}] DROP id={pkt['id']} ttl expired")
+#         continue
+
+#     next_hop = table.get(pkt["dst"])
+#     if next_hop is None:
+#         print(f"[{NAME}] DROP id={pkt['id']} unknown destination {pkt['dst']}")
+#         continue
+
+#     pkt["ttl"] -= 1
+#     sock.sendto(json.dumps(pkt).encode(), address_of(next_hop))
+#     print(f"[{NAME}] FORWARD id={pkt['id']} to {next_hop} ttl={pkt['ttl']}")
+
+
 import socket
 
-from packet import MAX_SIZE, parse_packet
-
-NAME = "A"
-
-config = json.load(open("config.json"))
-table = config[NAME]["table"]   # destination -> next hop
+from config import Config
+from packet import MAX_SIZE, Packet, PacketError
 
 
-def address_of(device):
-    return ("127.0.0.1", config[device]["port"])
+class Router:
+    def __init__(self, router_id, config):
+        if config.get_device(router_id)["type"] != "router":
+            raise ValueError(f"'{router_id}' is not a router")
 
+        self.id = router_id
+        self.config = config
+        self.address = config.get_address(self.id)
+        self.table = config.get_routes(self.id)
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.bind(address_of(NAME))
-print(f"Router {NAME} running on port {config[NAME]['port']}")
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-while True:
-    try:
-        data, sender = sock.recvfrom(MAX_SIZE + 1)
-    except ConnectionResetError:   # Windows: a neighbor is not running yet
-        continue
+        try:
+            self.sock.bind((self.address["ip"], self.address["port"]))
+        except OSError:
+            self.sock.close()
+            raise
 
-    pkt = parse_packet(data)
-    if pkt is None:
-        print(f"[{NAME}] DROP invalid packet")
-        continue
+    def _receive_packet(self):
+        data, _ = self.sock.recvfrom(MAX_SIZE + 1)
+        return data
 
-    print(f"[{NAME}] RECV id={pkt['id']} {pkt['src']}->{pkt['dst']} ttl={pkt['ttl']}")
+    def _send_packet(self, packet_bytes, next_hop):
+        self.sock.sendto(
+            packet_bytes,
+            (
+                self.config.get_address(next_hop)["ip"],
+                self.config.get_address(next_hop)["port"],
+            ),
+        )
 
-    if pkt["ttl"] <= 1:
-        print(f"[{NAME}] DROP id={pkt['id']} ttl expired")
-        continue
+    def forward(self, data):
+        try:
+            packet = Packet.from_bytes(data)
+        except PacketError:
+            # Add structured logging later.
+            return
 
-    next_hop = table.get(pkt["dst"])
-    if next_hop is None:
-        print(f"[{NAME}] DROP id={pkt['id']} unknown destination {pkt['dst']}")
-        continue
+        if packet.hop_limit <= 1:
+            # Log exhausted hop limit.
+            return
 
-    pkt["ttl"] -= 1
-    sock.sendto(json.dumps(pkt).encode(), address_of(next_hop))
-    print(f"[{NAME}] FORWARD id={pkt['id']} to {next_hop} ttl={pkt['ttl']}")
+        next_hop = self.table.get(packet.dst)
+        if next_hop is None:
+            # Log unknown destination.
+            return
+
+        try:
+            next_hop_address = self.config.get_address(next_hop)
+        except KeyError:
+            # Log invalid next hop.
+            return
+
+        if next_hop not in self.config.get_neighbors(self.id):
+            # Log next hop that is not directly connected.
+            return
+
+        forwarded_packet = Packet(
+            src=packet.src,
+            dst=packet.dst,
+            hop_limit=packet.hop_limit - 1,
+            type=packet.type,
+            id=packet.id,
+            payload=packet.payload,
+        )
+
+        try:
+            packet_bytes = forwarded_packet.to_bytes()
+        except PacketError:
+            return
+
+        self._send_packet(packet_bytes, next_hop)
+
+    def run(self):
+        print(
+            f"Router {self.id} running on "
+            f"{self.address['ip']}:{self.address['port']}"
+        )
+
+        while True:
+            try:
+                data = self._receive_packet()
+            except ConnectionResetError:
+                # Windows may report this when a neighbor is unavailable.
+                continue
+            except OSError:
+                break
+
+            self.forward(data)
+
+    def close(self):
+        self.sock.close()
