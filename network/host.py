@@ -1,6 +1,7 @@
-from config import Config
-from packet import Packet, PacketError
 import socket
+
+from config import Config
+from packet import MAX_SIZE, Packet, PacketError
 
 
 class Host:
@@ -20,6 +21,7 @@ class Host:
         self.neighbor = neighbors[0]
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
         try:
             self.sock.bind((self.address["ip"], self.address["port"]))
         except OSError:
@@ -27,10 +29,21 @@ class Host:
             raise
 
     def _send_packet(self, packet_bytes):
-        self.sock.sendto(packet_bytes, self.config.get_address(self.neighbor))
+        neighbor_address = self.config.get_address(self.neighbor)
+        self.sock.sendto(
+            packet_bytes,
+            (neighbor_address["ip"], neighbor_address["port"]),
+        )
 
     def send(self, data, dst):
-        packet = Packet(self.id, dst, 8, "DATA", self.packet_id, data)
+        packet = Packet(
+            src=self.id,
+            dst=dst,
+            hop_limit=8,
+            type="DATA",
+            id=self.packet_id,
+            payload=data,
+        )
 
         packet_bytes = packet.to_bytes()
         self._send_packet(packet_bytes)
@@ -38,7 +51,7 @@ class Host:
         self.packet_id = (self.packet_id + 1) % (2**32)
 
     def _receive_packet(self):
-        data, _ = self.sock.recvfrom(1200)
+        data, _ = self.sock.recvfrom(MAX_SIZE + 1)
         return data
 
     def receive(self):
@@ -47,13 +60,13 @@ class Host:
         try:
             packet = Packet.from_bytes(data)
         except PacketError:
-            # Add error logging later.
+            # Add protocol error logging later.
             return None
 
         if packet.dst != self.id:
             return None
 
-        return packet.payload
+        return packet
 
     def close(self):
         self.sock.close()
