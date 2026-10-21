@@ -119,3 +119,27 @@ The end-to-end network still requires:
 
 Until these items are addressed, this repository should be treated as an implementation checkpoint rather than a runnable mini-internet demonstration.
 
+
+## Basic host communication (3.4)
+
+From the repository root, start A, B, C and D in separate terminals with
+`python3 main.py A` (substitute each router ID). Start the destination host with
+`python3 main.py H2`, then send one probe:
+
+```bash
+python3 main.py H1 --probe H2 --message "hello from H1" --timeout 3 --run-id baseline
+```
+
+The command prints MATCHED only for a RESPONSE with the expected source,
+message ID and payload. Otherwise it prints TIMEOUT and exits with status 1.
+Each probe sends once; there are no retries. To demonstrate the reverse direction,
+stop the H2 server, start `python3 main.py H1`, and run:
+
+```bash
+python3 main.py H2 --probe H1 --message "hello from H2" --timeout 3 --run-id reverse
+```
+
+Do not run a server and probe process for the same host simultaneously: both bind
+that host's port. `--all` starts both echo servers, so use individual device startup
+for these probe commands. Run automated isolated UDP demonstrations with
+`python3 -m unittest discover -s tests`.
