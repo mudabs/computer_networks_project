@@ -153,6 +153,16 @@ class TestHostCommunication(unittest.TestCase):
 
         self.assertIsNone(self.host.receive())
 
+    def test_send_rejects_oversized_packet_without_sending(self):
+        from packet import PacketSizeError
+
+        data = "x" * 2000
+
+        with self.assertRaises(PacketSizeError):
+            self.host.send(data, "H2")
+
+        self.mock_sock.sendto.assert_not_called()
+
 
 class TestHostProbe(unittest.TestCase):
     def setUp(self):
