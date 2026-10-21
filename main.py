@@ -66,7 +66,7 @@ def run_device(device_id, config, run_id):
     if device_type == "host":
         device = Host(device_id, config, run_id=run_id)
     elif device_type == "router":
-        device = Router(device_id, config)
+        device = Router(device_id, config, run_id=run_id)
     else:
         raise ValueError(f"Unknown device type {device_type!r} for {device_id}")
 
