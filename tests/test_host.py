@@ -225,6 +225,15 @@ class TestHostProbe(unittest.TestCase):
 
         self.assertIsNone(result)
 
+    def test_probe_ignores_response_with_wrong_payload(self):
+        import socket
+        self.host.receive = MagicMock(side_effect=[
+            Packet("H2", "H1", 8, "RESPONSE", 0, "different"),
+            socket.timeout(),
+        ])
+        self.assertIsNone(self.host.probe("H2", "hello", timeout=0.1))
+        self.mock_sock.sendto.assert_called_once()
+
     def test_probe_ignores_response_from_wrong_source(self):
         import socket
 
