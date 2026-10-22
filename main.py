@@ -72,7 +72,14 @@ def run_device(device_id, config, run_id, probe=None):
             result = device.probe(probe, message, timeout=PROBE_TIMEOUT)
             print("TIMEOUT" if result is None else f"MATCHED {result!r}")
             return 1 if result is None else 0
-        device.run()
+        if device_type == "host" and sys.stdin.isatty():
+            peers = [name for name, entry in config.data["devices"].items()
+                     if entry["type"] == "host" and name != device_id]
+            if len(peers) != 1:
+                raise ValueError("Interactive mode requires exactly one other host")
+            device.interactive(peers[0], timeout=PROBE_TIMEOUT)
+        else:
+            device.run()
         return 0
     finally:
         device.close()
@@ -93,7 +100,8 @@ def run_all(device_ids, run_id, log_level):
                     run_id,
                     "--log-level",
                     log_level,
-                ]
+                ],
+                stdin=subprocess.DEVNULL,
             )
             processes.append(process)
 
