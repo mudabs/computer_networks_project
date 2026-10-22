@@ -67,7 +67,7 @@ class Host:
             raise ValueError("timeout must be finite and positive")
         request = Packet(self.id, dst, 8, "DATA", self.packet_id, payload)
         deadline = time.monotonic() + timeout
-        self.send(payload, dst)  # Baseline: send once, without retransmission.
+        self.send(payload, dst)
         old_timeout = self.sock.gettimeout()
         try:
             while True:
@@ -104,7 +104,7 @@ class Host:
         pending = {}
         expired = {}
         inputs = [self.sock, sys.stdin]
-        print(f"Listening as {self.id}. Type a message to {dst} and press Enter. Ctrl+C stops.")
+        print(f"Listening as {self.id}. Type a message to {dst}: ")
         while True:
             wait = min((deadline - time.monotonic() for _, deadline in pending.values()),
                        default=None)
