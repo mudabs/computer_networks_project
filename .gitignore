@@ -6,3 +6,15 @@ Mini_Internet_Project.md
 PROGRESS_REPORT.md
 individual_statements/
 routes.
+
+# Documentation and submission files (not code)
+documentation/
+*.docx
+*.doc
+*.pdf
+*.pptx
+*.mov
+*.mp4
+*.pcap
+*.pcapng
+~$*
