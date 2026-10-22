@@ -7,11 +7,12 @@ import unittest
 from config import Config
 from host import Host
 from router import Router
+from routes_fixture import use_upper_path
 
 
 class NetworkExchangeTests(unittest.TestCase):
     def setUp(self):
-        self.config = Config()
+        self.config = use_upper_path(Config())
         self.reservations = []
         for address in self.config.data['addresses'].values():
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

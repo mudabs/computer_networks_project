@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 from config import Config
 from link import LinkSender
 from packet import Packet
+from routes_fixture import use_upper_path
 
 
 class LinkTests(unittest.TestCase):
@@ -61,7 +62,7 @@ class LinkTests(unittest.TestCase):
         from router import Router
         from unittest.mock import patch
         with patch('router.socket.socket'):
-            router = Router('A', Config(), run_id='drop-test')
+            router = Router('A', use_upper_path(Config()), run_id='drop-test')
             self.addCleanup(router.close)
             with self.assertLogs(level='INFO') as captured:
                 router.forward(Packet('H1', 'H2', 1, 'DATA', 7, 'hello').to_bytes())
