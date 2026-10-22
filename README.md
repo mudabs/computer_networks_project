@@ -22,37 +22,54 @@ source host's port. In separate terminals start:
 
 ```bash
 python3 main.py A --run-id baseline
+```
+```bash
 python3 main.py B --run-id baseline
+```
+```bash
 python3 main.py C --run-id baseline
+```
+```bash
 python3 main.py D --run-id baseline
+```
+```bash
 python3 main.py H2 --run-id baseline
+```
+```bash
+python3 main.py H1 --run-id baseline
 ```
 
 ## Basic host communication (3.4)
 
-With the routers and H2 running, send one probe from H1:
+With routers running, open each host in its own terminal:
+
+```bash
+python3 main.py H1 --run-id baseline
+```
+```bash
+python3 main.py H2 --run-id baseline
+```
+
+Each host listens and echoes by default. Type a message and press Enter to send
+one probe to the other host. A matching response prints MATCHED; no reply within
+3 seconds prints TIMEOUT. Both hosts stay running and can send again without
+restarting. Incoming probes are echoed even while waiting for your own replies.
+Terminal input, packets and deadlines share a single `select` event loop on macOS;
+no additional host thread is used. The existing link-delay worker is unchanged.
+
+The fixed timeout is `PROBE_TIMEOUT` in `main.py`. Responses must match the
+source, destination, ID and payload. There are no retries. Ctrl+C stops a host.
+An oversized message is rejected without stopping the host.
+
+The optional one-shot mode still prompts for a message and exits after its result:
 
 ```bash
 python3 main.py H1 --probe H2 --run-id baseline
 ```
 
-Enter your message at the terminal prompt and press Enter. The response timeout
-is fixed at 3 seconds (`PROBE_TIMEOUT` in `main.py`).
-
-The result is MATCHED only when the RESPONSE matches the source, destination,
-message ID and payload. A finite timeout prints TIMEOUT and returns exit status 1.
-Each probe is transmitted once, with no retries. Echoes are separate RESPONSE
-packets routed back through the network.
-
-To initiate an exchange from H2, stop the H2 server, start the H1 server, and probe:
-
-```bash
-python3 main.py H1 --run-id reverse
-# In another terminal:
-python3 main.py H2 --probe H1 --run-id reverse
-```
-
-Do not run a server and probe process for the same host simultaneously.
+`--all` starts echo-only background devices, with terminal input disabled to avoid
+multiple hosts reading the same terminal. Use separate terminals for interactive
+hosts, and do not start two processes for the same device.
 
 ## Network conditions and logs (3.5)
 
@@ -106,3 +123,17 @@ so they do not conflict with running devices.
 (DATA or RESPONSE), id (unsigned 32-bit), and a string payload. The serialized
 packet limit is 1,200 bytes. See `Mini_Internet_Project.md` for the full assignment;
 remaining extensions are outside these baseline communication features.
+
+For a forced-drop demonstration on the lower path, set `conditions` to
+`[{"from":"A","to":"C","loss":1.0,"delay_ms":0,"seed":42}]`.
+Restart A, send one H1 probe, and observe A's `reason=injected_loss` and H1's
+TIMEOUT. This drops every packet on A→C while enabled; sending just one probe
+demonstrates one forced drop. Restore `conditions: []` and restart A afterward.
+Use B instead of C for the upper path. For random loss, use `loss: 0.05`.
+
+To demonstrate a late reply, use
+`[{"from":"H2","to":"D","loss":0.0,"delay_ms":4000,"seed":42}]`,
+restart H2, and send from the interactive H1 terminal. H1 reports TIMEOUT after
+3 seconds, then logs `event=late_response` and prints LATE when the matching reply
+arrives. It still counts as a timeout. Keep H1 open: one-shot `--probe` exits at
+its timeout and cannot observe later replies. Restore the conditions afterward.

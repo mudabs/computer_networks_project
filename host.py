@@ -1,4 +1,6 @@
 import math
+import select
+import sys
 import socket
 import time
 
@@ -96,6 +98,57 @@ class Host:
         if packet.type == "DATA":
             response = Packet(self.id, packet.src, 8, "RESPONSE", packet.id, packet.payload)
             self._send_packet(response.to_bytes())
+
+    def interactive(self, dst, timeout=3.0):
+        """Echo incoming packets and send typed messages, using one event loop."""
+        pending = {}
+        expired = {}
+        inputs = [self.sock, sys.stdin]
+        print(f"Listening as {self.id}. Type a message to {dst} and press Enter. Ctrl+C stops.")
+        while True:
+            wait = min((deadline - time.monotonic() for _, deadline in pending.values()),
+                       default=None)
+            ready, _, _ = select.select(inputs, [], [], None if wait is None else max(0, wait))
+            now = time.monotonic()
+            for msg_id, (request, deadline) in list(pending.items()):
+                if deadline <= now:
+                    event(self.run_id, self.id, "timeout", request, self.neighbor,
+                          timeout_seconds=timeout)
+                    print(f"TIMEOUT id={msg_id}")
+                    expired[msg_id] = request
+                    del pending[msg_id]
+            if self.sock in ready:
+                packet = self.receive()
+                if packet is not None:
+                    if packet.type == "DATA":
+                        print(f"Received from {packet.src}: {packet.payload!r}")
+                        self.echo(packet)
+                    elif packet.id in pending:
+                        request, deadline = pending[packet.id]
+                        if (time.monotonic() < deadline and packet.src == request.dst
+                                and packet.payload == request.payload):
+                            event(self.run_id, self.id, "probe_success", packet)
+                            print(f"MATCHED id={packet.id} {packet.payload!r}")
+                            del pending[packet.id]
+                    elif packet.id in expired:
+                        request = expired[packet.id]
+                        if packet.src == request.dst and packet.payload == request.payload:
+                            event(self.run_id, self.id, "late_response", packet)
+                            print(f"LATE id={packet.id} {packet.payload!r}")
+                            del expired[packet.id]
+            if sys.stdin in ready:
+                line = sys.stdin.readline()
+                if not line:
+                    inputs.remove(sys.stdin)  # Keep echoing after terminal input closes.
+                else:
+                    message = line.rstrip("\n")
+                    request = Packet(self.id, dst, 8, "DATA", self.packet_id, message)
+                    try:
+                        self.send(message, dst)
+                    except PacketError as exc:
+                        print(f"Message rejected: {exc}")
+                        continue
+                    pending[request.id] = (request, time.monotonic() + timeout)
 
     def run(self):
         while True:
