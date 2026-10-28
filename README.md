@@ -1,6 +1,6 @@
 # Mini Internet
 
-CSCI 5500 Computer Networks, Fall 2026 — Group 1.
+CSCI 5500 Computer Networks, Fall 2026 - Group 1.
 Python 3 is required; no third-party packages are needed.
 Run commands from the repository root.
 
