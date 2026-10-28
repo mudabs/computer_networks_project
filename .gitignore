@@ -18,3 +18,5 @@ documentation/
 *.pcap
 *.pcapng
 ~$*
+
+.DS_Store
