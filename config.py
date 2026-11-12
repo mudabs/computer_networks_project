@@ -1,18 +1,26 @@
 import json
 import math
+import copy
 from pathlib import Path
 
 
 class Config:
-    def __init__(self):
+    def __init__(self, network_path=None, routes_path=None,
+                 network_data=None, route_data=None):
         self.base_dir = Path(__file__).resolve().parent
         data_dir = self.base_dir / "data"
 
-        with open(data_dir / "network.json") as f:
-            self.data = json.load(f)
+        if network_data is not None:
+            self.data = copy.deepcopy(network_data)
+        else:
+            with open(network_path or data_dir / "network.json") as f:
+                self.data = json.load(f)
 
-        with open(data_dir / "routes.json") as f:
-            self.route_data = json.load(f)
+        if route_data is not None:
+            self.route_data = copy.deepcopy(route_data)
+        else:
+            with open(routes_path or data_dir / "routes.json") as f:
+                self.route_data = json.load(f)
 
         self.validate_conditions()
 
