@@ -14,6 +14,9 @@ class Router:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             self.sock.bind((self.address['ip'], self.address['port']))
+            # A short timeout lets the GUI restart the in-process network
+            # without leaving a router blocked in recvfrom().
+            self.sock.settimeout(0.2)
         except OSError:
             self.sock.close()
             raise

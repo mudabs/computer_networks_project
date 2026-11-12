@@ -26,6 +26,9 @@ class Host:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             self.sock.bind((self.address["ip"], self.address["port"]))
+            # A short timeout lets a GUI controller stop and restart a host
+            # cleanly without waiting forever in recvfrom().
+            self.sock.settimeout(0.2)
         except OSError:
             self.sock.close()
             raise
@@ -91,6 +94,57 @@ class Host:
             event(self.run_id, self.id, "timeout", request, self.neighbor,
                   timeout_seconds=timeout)
             return None
+        finally:
+            self.sock.settimeout(old_timeout)
+
+    def probe_with_late(self, dst, payload, timeout=1.0, late_window=3.0):
+        """Probe while optionally observing a matching response after timeout.
+
+        The normal probe API retains its original one-shot semantics.  This
+        variant is used by the visual demo so a delayed response can be shown
+        as LATE without changing the CLI behavior.
+        """
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be finite and positive")
+        if not math.isfinite(late_window) or late_window < 0:
+            raise ValueError("late_window must be finite and nonnegative")
+
+        request = Packet(self.id, dst, 8, "DATA", self.packet_id, payload)
+        self.send(payload, dst)
+        old_timeout = self.sock.gettimeout()
+
+        def wait_for_response(deadline):
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self.sock.settimeout(remaining)
+                try:
+                    packet = self.receive()
+                except socket.timeout:
+                    return None
+                if packet is None:
+                    continue
+                if packet.type == "DATA":
+                    self.echo(packet)
+                elif (packet.type == "RESPONSE" and packet.src == dst
+                      and packet.dst == self.id and packet.id == request.id
+                      and packet.payload == payload):
+                    return packet
+
+        try:
+            packet = wait_for_response(time.monotonic() + timeout)
+            if packet is not None:
+                event(self.run_id, self.id, "probe_success", packet)
+                return "MATCHED", packet.payload
+
+            event(self.run_id, self.id, "timeout", request, self.neighbor,
+                  timeout_seconds=timeout)
+            packet = wait_for_response(time.monotonic() + late_window)
+            if packet is not None:
+                event(self.run_id, self.id, "late_response", packet)
+                return "LATE", packet.payload
+            return "TIMEOUT", None
         finally:
             self.sock.settimeout(old_timeout)
 

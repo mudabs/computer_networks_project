@@ -16,6 +16,23 @@ Restart devices after changing configuration.
 python3 main.py --all --run-id baseline
 ```
 
+## Visual demo GUI
+
+For a presentation, launch the visual demo instead of opening multiple
+terminals:
+
+```bash
+python gui.py
+```
+
+The GUI uses the same `Host`, `Router`, UDP, routing, packet validation, loss,
+and delay implementation as the CLI. It animates actual send events on the
+topology, shows the live route and event log, and reports MATCHED, TIMEOUT,
+and late responses. The Routes and Link conditions tabs let you change static
+next hops, directed loss, delay, and seeds in memory, then apply the scenario
+with one click. The JSON files are not modified, and Reset all settings
+restores the files' original configuration.
+
 This starts every configured device as an echo server. Ctrl+C stops the network.
 For probes, start individual devices instead, because a probe needs to bind its
 source host's port. In separate terminals start:
