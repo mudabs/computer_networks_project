@@ -4,34 +4,21 @@ CSCI 5500 Computer Networks, Fall 2026 - Group 1.
 Python 3 is required; no third-party packages are needed.
 Run commands from the repository root.
 
-## Start the network
+## Start the network with the CLI
 
 `data/network.json` defines devices, UDP addresses, bidirectional topology links,
 and optional directed link conditions. `data/routes.json` defines static routes.
-All configured devices run on localhost. The default path is H1–A–B–D–H2;
-C supplies an alternate path. To use C, change A's H2 route and D's H1 route to C.
-Restart devices after changing configuration.
+All configured devices run on localhost. In the current configuration, the lower
+path is selected: H1 -> A -> C -> D -> H2. To use the upper path, change A's
+H2 route and D's H1 route to B, then restart the devices.
+
+Use `python` on Windows if `python3` is not available.
+
+### Run all devices
 
 ```bash
 python3 main.py --all --run-id baseline
 ```
-
-## Visual demo GUI
-
-For a presentation, launch the visual demo instead of opening multiple
-terminals:
-
-```bash
-python gui.py
-```
-
-The GUI uses the same `Host`, `Router`, UDP, routing, packet validation, loss,
-and delay implementation as the CLI. It animates actual send events on the
-topology, shows the live route and event log, and reports MATCHED, TIMEOUT,
-and late responses. The Routes and Link conditions tabs let you change static
-next hops, directed loss, delay, and seeds in memory, then apply the scenario
-with one click. The JSON files are not modified, and Reset all settings
-restores the files' original configuration.
 
 This starts every configured device as an echo server. Ctrl+C stops the network.
 For probes, start individual devices instead, because a probe needs to bind its
@@ -55,6 +42,30 @@ python3 main.py H2 --run-id baseline
 ```bash
 python3 main.py H1 --run-id baseline
 ```
+
+### Visual demo GUI
+
+For a presentation, launch the visual demo instead of opening multiple
+terminals. Do not run `main.py --all` at the same time because both modes use
+the configured UDP ports.
+
+```bash
+python gui.py
+```
+
+The GUI uses the same `Host`, `Router`, UDP, routing, packet validation, loss,
+and delay implementation as the CLI. It shows the live topology, highlights
+the selected route, animates packet send events, displays the event log, and
+reports MATCHED, TIMEOUT, and late responses.
+
+The GUI window sizes itself for the available screen and redraws the topology
+using the actual canvas size. The Routes and Link Conditions tabs let you
+change static next hops, directed loss, delay, and seeds in memory, then apply
+the scenario with one click. The JSON files are not modified. Use Reset all
+settings to restore the configuration loaded at startup.
+
+Tkinter is part of the standard Python distribution on Windows and macOS. On
+some Linux distributions, install the system package `python3-tk` if needed.
 
 ## Basic host communication (3.4)
 
