@@ -100,7 +100,7 @@ class TestHostCommunication(unittest.TestCase):
         self.assertEqual(packet.payload, "hello")
         self.assertEqual(packet.type, "DATA")
         self.assertEqual(packet.id, 0)
-        self.assertEqual(packet.hop_limit, 8)
+        self.assertEqual(packet.ttl, 8)
         self.assertEqual(self.host.packet_id, 1)
 
     def test_send_increments_id_for_each_message(self):
@@ -180,7 +180,7 @@ class TestHostProbe(unittest.TestCase):
         response = Packet(
             src="H2",
             dst="H1",
-            hop_limit=8,
+            ttl=8,
             type="RESPONSE",
             id=0,
             payload="hello",
@@ -211,7 +211,7 @@ class TestHostProbe(unittest.TestCase):
         wrong_response = Packet(
             src="H2",
             dst="H1",
-            hop_limit=8,
+            ttl=8,
             type="RESPONSE",
             id=99,
             payload="wrong",
@@ -240,7 +240,7 @@ class TestHostProbe(unittest.TestCase):
         wrong_response = Packet(
             src="H3",
             dst="H1",
-            hop_limit=8,
+            ttl=8,
             type="RESPONSE",
             id=0,
             payload="wrong",
@@ -271,7 +271,7 @@ class TestHostEcho(unittest.TestCase):
         request = Packet(
             src="H2",
             dst="H1",
-            hop_limit=8,
+            ttl=8,
             type="DATA",
             id=42,
             payload="hello",
@@ -288,14 +288,14 @@ class TestHostEcho(unittest.TestCase):
         self.assertEqual(response.type, "RESPONSE")
         self.assertEqual(response.id, 42)
         self.assertEqual(response.payload, "hello")
-        self.assertEqual(response.hop_limit, 8)
+        self.assertEqual(response.ttl, 8)
         self.assertEqual(address, ("127.0.0.1", 6001))
 
     def test_echo_ignores_response_packet(self):
         packet = Packet(
             src="H2",
             dst="H1",
-            hop_limit=8,
+            ttl=8,
             type="RESPONSE",
             id=42,
             payload="hello",
@@ -322,7 +322,7 @@ class TestHostRun(unittest.TestCase):
         request = Packet(
             src="H2",
             dst="H1",
-            hop_limit=8,
+            ttl=8,
             type="DATA",
             id=7,
             payload="hello",
@@ -345,7 +345,7 @@ class TestHostRun(unittest.TestCase):
         request = Packet(
             src="H2",
             dst="H1",
-            hop_limit=8,
+            ttl=8,
             type="DATA",
             id=8,
             payload="hello",

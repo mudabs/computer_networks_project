@@ -36,8 +36,8 @@ class Router:
         next_hop = self.table.get(packet.dst)
         event(self.run_id, self.id, 'receive', packet, next_hop or '-')
         reason = None
-        if packet.hop_limit <= 1:
-            reason = 'hop_limit_exhausted'
+        if packet.ttl <= 1:
+            reason = 'ttl_exhausted'
         elif next_hop is None:
             reason = 'no_route'
         elif next_hop not in self.config.get_neighbors(self.id):
@@ -47,7 +47,7 @@ class Router:
         if reason:
             event(self.run_id, self.id, 'drop', packet, next_hop or '-', reason=reason)
             return
-        forwarded = Packet(packet.src, packet.dst, packet.hop_limit - 1,
+        forwarded = Packet(packet.src, packet.dst, packet.ttl - 1,
                            packet.type, packet.id, packet.payload)
         event(self.run_id, self.id, 'forward', forwarded, next_hop)
         self._send_packet(forwarded.to_bytes(), next_hop)

@@ -69,7 +69,7 @@ The Host uses the shared six-field packet format.
 | ----------- | --------------------------------------------- |
 | `src`       | Virtual source address                        |
 | `dst`       | Virtual destination address                   |
-| `hop_limit` | Limits packet forwarding                      |
+| `ttl` | Limits packet forwarding                      |
 | `type`      | Distinguishes `DATA` and `RESPONSE`           |
 | `id`        | Identifies a message and matches its response |
 | `payload`   | Application data                              |

@@ -8,7 +8,7 @@ Each packet contains six required fields:
 
 - `src`
 - `dst`
-- `hop_limit`
+- `ttl`
 - `type`
 - `id`
 - `payload`
@@ -21,7 +21,7 @@ A packet is represented as a JSON object containing exactly six fields.
 {
   "src": "H1",
   "dst": "H2",
-  "hop_limit": 8,
+  "ttl": 8,
   "type": "DATA",
   "id": 0,
   "payload": "Hello H2"
@@ -43,7 +43,7 @@ The virtual address of the packet's final destination.
 - The destination address does not change when the packet is forwarded.
 - Routers use the destination address to select the next hop.
 
-### `hop_limit`
+### `ttl`
 The number of forwarding hops remaining for the packet.
 - Type: integer
 - Valid range: `1–8`
@@ -87,7 +87,7 @@ A packet is invalid if:
 - A required field is missing.
 - An unexpected field is present.
 - A field has the wrong type.
-- `hop_limit` is outside the range `1–8`.
+- `ttl` is outside the range `1–8`.
 - `type` is not a supported message type.
 - `id` is outside the unsigned 32-bit range.
 - The serialized packet exceeds 1,200 bytes.
@@ -99,18 +99,18 @@ A valid packet:
 {
   "src": "H1",
   "dst": "H2",
-  "hop_limit": 8,
+  "ttl": 8,
   "type": "DATA",
   "id": 0,
   "payload": "Hello H2"
 }
 ```
-When a router forwards the packet, the `hop_limit` is decreased. The other fields remain unchanged.
+When a router forwards the packet, the `ttl` is decreased. The other fields remain unchanged.
 ```json
 {
   "src": "H1",
   "dst": "H2",
-  "hop_limit": 7,
+  "ttl": 7,
   "type": "DATA",
   "id": 0,
   "payload": "Hello H2"

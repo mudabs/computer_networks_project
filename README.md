@@ -119,7 +119,7 @@ request/response loss, seeded repeatability, invalid rules, nonblocking delays,
 and a complete router trace. Integration tests use ephemeral localhost ports,
 so they do not conflict with running devices.
 
-`packet.py` validates UTF-8 JSON packets with src, dst, hop_limit (1–8), type
+`packet.py` validates UTF-8 JSON packets with src, dst, ttl (1–8), type
 (DATA or RESPONSE), id (unsigned 32-bit), and a string payload. The serialized
 packet limit is 1,200 bytes. See `Mini_Internet_Project.md` for the full assignment;
 remaining extensions are outside these baseline communication features.
