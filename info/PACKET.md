@@ -136,3 +136,51 @@ at commit `557ce9c`. The baseline format above describes `main`.
 | `id` | Transfer identifier | Same `id` as the DATA being acknowledged |
 | `seq` | Sequence value for this DATA packet | Same `seq` as the DATA being acknowledged |
 | `payload` | Application message | Empty string (`""`) |
+
+
+### Sender state machine (draft)
+
+The sender keeps one DATA packet outstanding at a time. A matching
+ACK lets it advance to the next message. On timeout, it resends the
+same DATA packet if retries remain.
+
+```mermaid
+flowchart TD
+    Send["Send current DATA"] --> Wait["Wait for matching ACK"]
+    Wait -->|Matching ACK| More{"More messages?"}
+    More -->|Yes| Advance["Advance to next message"]
+    Advance --> Send
+    More -->|No| Done["Transfer complete"]
+    Wait -->|Timeout| Retry{"Retries remaining?"}
+    Retry -->|Yes| Send
+    Retry -->|No| Fail["Transfer failed"]
+```
+
+Verify the ACK matching rules, timeout, and retry limit against the
+integrated sender implementation.
+
+### Receiver state machine (draft)
+
+The receiver delivers expected DATA once and sends an ACK. If the sender
+retransmits a DATA packet that was already delivered, the receiver resends
+its ACK and leaves the delivered message count unchanged.
+
+```mermaid
+flowchart TD
+    Wait["Wait for DATA"] --> Check{"Which DATA arrived?"}
+    Check -->|Expected DATA| Deliver["Deliver once and send ACK"]
+    Deliver --> Final{"Final message?"}
+    Final -->|No| Advance["Advance expected sequence"]
+    Advance --> Wait
+    Final -->|Yes| Grace["Wait during grace period"]
+    Check -->|Previously accepted DATA| Repeat["Resend ACK"]
+    Repeat --> Wait
+    Check -->|Other DATA| Wait
+    Grace -->|Duplicate final DATA| ReAck["Resend final ACK"]
+    ReAck --> Grace
+    Grace -->|Grace period expires| Done["Receiver finished"]
+```
+
+This diagram describes the planned behavior. Verify how the integrated
+receiver identifies the final message and handles the grace-period timer.
+
