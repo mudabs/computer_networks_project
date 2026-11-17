@@ -120,3 +120,19 @@ When a router forwards the packet, the `hop_limit` is decreased. The other field
 ## Error Handling
 Invalid packets must be rejected without crashing the host or router process.
 The receiver should record an error in its log when a packet is rejected.
+
+
+## Track B packet format (draft)
+
+This section follows the packet format in `feat/protocol_and_architecture`
+at commit `557ce9c`. The baseline format above describes `main`.
+
+| Field | DATA | ACK |
+| --- | --- | --- |
+| `src` | Virtual address of the sender | Virtual address of the receiver sending the acknowledgment |
+| `dst` | Virtual address of the receiver | Virtual address of the original sender |
+| `ttl` | Remaining forwarding hop limit | Remaining forwarding hop limit for the return path |
+| `type` | `DATA` | `ACK` |
+| `id` | Transfer identifier | Same `id` as the DATA being acknowledged |
+| `seq` | Sequence value for this DATA packet | Same `seq` as the DATA being acknowledged |
+| `payload` | Application message | Empty string (`""`) |
