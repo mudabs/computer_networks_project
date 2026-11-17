@@ -137,6 +137,10 @@ at commit `557ce9c`. The baseline format above describes `main`.
 | `seq` | Sequence value for this DATA packet | Same `seq` as the DATA being acknowledged |
 | `payload` | Application message | Empty string (`""`) |
 
+The draft Track B packet validator requires `ttl` to be an integer
+from 1 to 8. Both `id` and `seq` are unsigned 32-bit integers.
+ACK packets must carry an empty string as the payload. The full
+UTF-8 JSON packet is limited to 1,200 bytes.
 
 ### Sender state machine (draft)
 
