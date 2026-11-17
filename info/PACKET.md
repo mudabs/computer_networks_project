@@ -136,3 +136,26 @@ at commit `557ce9c`. The baseline format above describes `main`.
 | `id` | Transfer identifier | Same `id` as the DATA being acknowledged |
 | `seq` | Sequence value for this DATA packet | Same `seq` as the DATA being acknowledged |
 | `payload` | Application message | Empty string (`""`) |
+
+
+
+### Sender state machine (draft)
+
+The sender keeps one DATA packet outstanding at a time. A matching
+ACK lets it advance to the next message. On timeout, it resends the
+same DATA packet if retries remain.
+
+```mermaid
+flowchart TD
+    Send["Send current DATA"] --> Wait["Wait for matching ACK"]
+    Wait -->|Matching ACK| More{"More messages?"}
+    More -->|Yes| Advance["Advance to next message"]
+    Advance --> Send
+    More -->|No| Done["Transfer complete"]
+    Wait -->|Timeout| Retry{"Retries remaining?"}
+    Retry -->|Yes| Send
+    Retry -->|No| Fail["Transfer failed"]
+```
+
+Verify the ACK matching rules, timeout, and retry limit against the
+integrated sender implementation.
