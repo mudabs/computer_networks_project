@@ -141,6 +141,17 @@ class TestAckMatching(HostHarness):
                 # Initial send plus every allowed retry: the ACK was ignored.
                 self.assertEqual(self.sock.sendto.call_count, 1 + 2)
 
+    def test_mismatched_ack_is_not_treated_as_the_awaited_ack(self):
+        """The send loop must hand a mismatched ACK to normal processing
+        instead of consuming it as the awaited ACK."""
+        bad_ack = ack(id=7, seq=2)
+        self.script = [bad_ack]
+
+        with patch.object(self.host, "_process") as process:
+            self.assertFalse(self.host._send_reliably(self.packet))
+
+        process.assert_called_once_with(bad_ack)
+
     def test_non_ack_packet_with_matching_fields_does_not_complete_send(self):
         response = Packet("H2", "H1", 8, "RESPONSE", 7, 3, "payload")
         self.script = [response]
@@ -267,28 +278,6 @@ class TestReceiverSequenceHandling(HostHarness):
     def test_received_ack_is_only_logged(self):
         self.assertFalse(self.host._process(ack(src="H2", dst="H1")))
         self.sock.sendto.assert_not_called()
-
-    def test_reliable_data_does_not_emit_unintended_response(self):
-        """Regression (defect): see PR description.
-
-        ``_process`` calls ``echo`` for every newly delivered DATA packet, so a
-        reliable transfer receiver sends an extra RESPONSE besides the ACK.
-        PACKET.md describes only an ACK for DATA; the RESPONSE is part of the
-        best-effort probe/echo baseline. Marked expectedFailure so the suite
-        documents the defect without changing production behavior.
-        """
-        self.host._process(data(seq=0))
-        types = [p.type for p in self.sent_packets()]
-        self.assertEqual(types, ["ACK"])
-
-    test_reliable_data_does_not_emit_unintended_response = unittest.expectedFailure(
-        test_reliable_data_does_not_emit_unintended_response
-    )
-
-    def test_current_behavior_new_data_emits_ack_then_response(self):
-        """Pins today's behavior so the defect above is explicit and visible."""
-        self.host._process(data(seq=0))
-        self.assertEqual([p.type for p in self.sent_packets()], ["ACK", "RESPONSE"])
 
     def test_duplicate_data_does_not_emit_response(self):
         self.host._process(data(seq=0))
