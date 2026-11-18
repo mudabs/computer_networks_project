@@ -1,7 +1,9 @@
 # Mini Internet
 
 CSCI 5500 Computer Networks, Fall 2026 - Group 1.
-Python 3 is required; no third-party packages are needed.
+
+Python 3 is required. No third-party Python packages are needed.
+The baseline test suite was verified on macOS with Python 3.14.7.
 Run commands from the repository root.
 
 ## Start the network with the CLI
@@ -106,13 +108,13 @@ For example, replace that array with:
 
 ```json
 "conditions": [
-  {"from": "A", "to": "B", "loss": 0.25, "delay_ms": 100, "seed": 42}
+  {"from": "A", "to": "C", "loss": 0.25, "delay_ms": 100, "seed": 42}
 ]
 ```
 
 This applies a 25% drop probability and adds 100 ms delivery delay to surviving
-packets on **A→B only**. The reverse B→A link is unaffected. To condition both
-directions, add a second rule with `from: B` and `to: A`. Rules must identify
+packets on **A→C only**. The reverse C→A link is unaffected. To condition both
+directions, add a second rule with `from: C` and `to: A`. Rules must identify
 configured neighbors; loss is in [0, 1], delay is nonnegative milliseconds, and
 seed is an integer. Each directed link has its own seeded random sequence.
 The same rules apply to DATA and RESPONSE packets, including links sent by hosts.
@@ -127,14 +129,15 @@ missing reply for that probe.
 
 Use the same `--run-id` in every terminal. INFO logs include timestamps, device,
 message ID/type, virtual source/destination, next hop and hop limit. Router receive,
-forward, send and drop events let you follow DATA H1→A→B→D→H2 and RESPONSE
-H2→D→B→A→H1. `send` means the UDP datagram was actually sent. Condition events record link,
+forward, send and drop events let you follow DATA H1→A→C→D→H2  and RESPONSE H2→D→C→A→H1.
+`send` means the UDP datagram was actually sent. Condition events record link,
 seed, loss and delay; drops distinguish injected loss and forwarding errors.
 Fields unavailable for malformed packets are `-`.
 
 Capture a device's output with `2>&1 | tee device.log`, or collect all six server
-logs from `--all` in one terminal. `info/baseline_trace.log` contains a real isolated
-UDP request/response trace with timestamps and run ID `trace`, using ephemeral ports.
+logs from `--all` in one terminal.
+`info/baseline_trace.log` contains a real UDP request/response trace
+through the alternate route via B, using ephemeral ports and run ID `trace`.
 
 ## Verification
 
@@ -148,9 +151,9 @@ and a complete router trace. Integration tests use ephemeral localhost ports,
 so they do not conflict with running devices.
 
 `packet.py` validates UTF-8 JSON packets with src, dst, hop_limit (1–8), type
-(DATA or RESPONSE), id (unsigned 32-bit), and a string payload. The serialized
-packet limit is 1,200 bytes. See `Mini_Internet_Project.md` for the full assignment;
-remaining extensions are outside these baseline communication features.
+(DATA or RESPONSE), id (unsigned 32-bit), and a string payload.
+The serialized packet limit is 1,200 bytes.
+See the course handout on Canvas for the full assignment.
 
 For a forced-drop demonstration on the lower path, set `conditions` to
 `[{"from":"A","to":"C","loss":1.0,"delay_ms":0,"seed":42}]`.
@@ -165,3 +168,12 @@ restart H2, and send from the interactive H1 terminal. H1 reports TIMEOUT after
 3 seconds, then logs `event=late_response` and prints LATE when the matching reply
 arrives. It still counts as a timeout. Keep H1 open: one-shot `--probe` exits at
 its timeout and cannot observe later replies. Restore the conditions afterward.
+
+
+### Reproduce the baseline experiment
+
+Download and extract the evidence ZIP attached to [issue #27](https://github.com/mudabs/computer_networks_project/issues/27).
+From the repository root at baseline commit `a66e637`, follow
+`BASELINE-README.txt` to run the 240-probe matrix. The archive includes
+the original CSV, the runner, and the expected match and timeout counts.
+The match and timeout counts were reproduced on macOS with Python 3.14.7.
