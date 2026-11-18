@@ -168,3 +168,12 @@ restart H2, and send from the interactive H1 terminal. H1 reports TIMEOUT after
 3 seconds, then logs `event=late_response` and prints LATE when the matching reply
 arrives. It still counts as a timeout. Keep H1 open: one-shot `--probe` exits at
 its timeout and cannot observe later replies. Restore the conditions afterward.
+
+
+### Reproduce the baseline experiment
+
+Download and extract the evidence ZIP attached to [issue #27](https://github.com/mudabs/computer_networks_project/issues/27).
+From the repository root at baseline commit `a66e637`, follow
+`BASELINE-README.txt` to run the 240-probe matrix. The archive includes
+the original CSV, the runner, and the expected match and timeout counts.
+The match and timeout counts were reproduced on macOS with Python 3.14.7.
