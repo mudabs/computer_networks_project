@@ -1,7 +1,7 @@
 from dataclasses import dataclass, asdict
 import json
 
-VALID_PACKET_TYPES = {"DATA", "RESPONSE", "ACK"}
+VALID_PACKET_TYPES = {"DATA", "RESPONSE", "ACK", "FIN"}
 MAX_SIZE = 1200
 MAX_ID = 4294967295
 
