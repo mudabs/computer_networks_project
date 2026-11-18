@@ -147,10 +147,17 @@ request/response loss, seeded repeatability, invalid rules, nonblocking delays,
 and a complete router trace. Integration tests use ephemeral localhost ports,
 so they do not conflict with running devices.
 
-`packet.py` validates UTF-8 JSON packets with src, dst, hop_limit (1–8), type
-(DATA or RESPONSE), id (unsigned 32-bit), and a string payload. The serialized
+`packet.py` validates UTF-8 JSON packets with src, dst, ttl (1–8), type
+(DATA, RESPONSE, ACK, or FIN), id and seq (unsigned 32-bit), and a string payload
+(empty for ACK). The serialized
 packet limit is 1,200 bytes. See `Mini_Internet_Project.md` for the full assignment;
 remaining extensions are outside these baseline communication features.
+
+Reliable stop-and-wait transfer (Track B) uses `--mode reliable` on both hosts.
+Start the receiver (`python3 main.py H2 --mode reliable`) and the routers, then run
+`python3 main.py H1 --mode reliable --timeout 1 --transfer H2 --messages one two three`.
+It prints `TRANSFER COMPLETE` or `TRANSFER FAILED` (exit code 1) once retries run out.
+Reliable receivers ACK DATA/FIN instead of echoing; best-effort hosts behave as before.
 
 For a forced-drop demonstration on the lower path, set `conditions` to
 `[{"from":"A","to":"C","loss":1.0,"delay_ms":0,"seed":42}]`.

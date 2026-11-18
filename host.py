@@ -6,13 +6,28 @@ import time
 
 from config import Config
 from link import LinkSender, event
-from packet import MAX_SIZE, Packet, PacketError
+from packet import MAX_ID, MAX_SIZE, Packet, PacketError
 
 
 class Host:
-    def __init__(self, host_id, config: Config, run_id="default"):
+    def __init__(self, host_id, config: Config, run_id="default",
+                 timeout=1.0, max_retries=3, mode="best_effort"):
         if config.get_device(host_id)["type"] != "host":
             raise ValueError(f"'{host_id}' is not a host")
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be finite and positive")
+        if type(max_retries) is not int or max_retries < 0:
+            raise ValueError("max_retries must be non-negative")
+        if mode not in ("best_effort", "reliable"):
+            raise ValueError("mode must be best_effort or reliable")
+        self.mode = mode
+        self.timeout = timeout
+        self.max_retries = max_retries
+        # Reliable-transfer state (stop-and-wait): next expected seq per
+        # (source, transfer id), finished transfers, and the active send.
+        self.expected = {}
+        self.completed = set()
+        self.transfer = None
         self.id = host_id
         self.config = config
         self.address = config.get_address(self.id)
@@ -38,10 +53,15 @@ class Host:
     def _send_packet(self, packet_bytes):
         self.sender.send(packet_bytes, self.neighbor)
 
-    def send(self, data, dst):
-        packet = Packet(self.id, dst, 8, "DATA", self.packet_id, data)
+    def send(self, data, dst, mode=None):
+        mode = self.mode if mode is None else mode
+        if mode == "reliable":
+            return self.start_transfer([data], dst)
+        if mode != "best_effort":
+            raise ValueError("Invalid mode")
+        packet = Packet(self.id, dst, 8, "DATA", self.packet_id, 0, data)
         self._send_packet(packet.to_bytes())
-        self.packet_id = (self.packet_id + 1) % (2**32)
+        self.packet_id = (self.packet_id + 1) % (MAX_ID + 1)
 
     def _receive_packet(self):
         data, _ = self.sock.recvfrom(MAX_SIZE + 1)
@@ -68,7 +88,7 @@ class Host:
     def probe(self, dst, payload, timeout=1.0):
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be finite and positive")
-        request = Packet(self.id, dst, 8, "DATA", self.packet_id, payload)
+        request = Packet(self.id, dst, 8, "DATA", self.packet_id, 0, payload)
         deadline = time.monotonic() + timeout
         self.send(payload, dst)
         old_timeout = self.sock.gettimeout()
@@ -84,8 +104,8 @@ class Host:
                     break
                 if packet is None:
                     continue
-                if packet.type == "DATA":
-                    self.echo(packet)
+                if packet.type != "RESPONSE":
+                    self._process(packet)
                 elif (packet.type == "RESPONSE"
                       and packet.src == dst and packet.dst == self.id
                       and packet.id == request.id and packet.payload == payload):
@@ -109,7 +129,7 @@ class Host:
         if not math.isfinite(late_window) or late_window < 0:
             raise ValueError("late_window must be finite and nonnegative")
 
-        request = Packet(self.id, dst, 8, "DATA", self.packet_id, payload)
+        request = Packet(self.id, dst, 8, "DATA", self.packet_id, 0, payload)
         self.send(payload, dst)
         old_timeout = self.sock.gettimeout()
 
@@ -125,8 +145,8 @@ class Host:
                     return None
                 if packet is None:
                     continue
-                if packet.type == "DATA":
-                    self.echo(packet)
+                if packet.type != "RESPONSE":
+                    self._process(packet)
                 elif (packet.type == "RESPONSE" and packet.src == dst
                       and packet.dst == self.id and packet.id == request.id
                       and packet.payload == payload):
@@ -148,9 +168,139 @@ class Host:
         finally:
             self.sock.settimeout(old_timeout)
 
+    # Reliable finite transfer (stop-and-wait). Used only in "reliable" mode;
+    # best-effort probe/echo behavior is unchanged.
+
+    def start_transfer(self, messages, dst):
+        messages = list(messages)
+        if not messages:
+            raise ValueError("Transfer must contain at least one message")
+        if len(messages) > MAX_ID:
+            raise ValueError("Transfer has too many messages")
+        if any(not isinstance(message, str) for message in messages):
+            raise ValueError("All messages must be strings")
+
+        transfer_id = self.packet_id
+        self.packet_id = (self.packet_id + 1) % (MAX_ID + 1)
+        self.transfer = {
+            "id": transfer_id,
+            "status": "ACTIVE",
+            "count": len(messages),
+            "sent": 0,
+        }
+        event(self.run_id, self.id, "transfer_start",
+              transfer_id=transfer_id, count=len(messages))
+
+        for seq, message in enumerate(messages):
+            packet = Packet(self.id, dst, 8, "DATA", transfer_id, seq, message)
+            if not self._send_reliably(packet):
+                self.transfer["status"] = "FAILED"
+                event(self.run_id, self.id, "failure", packet, self.neighbor,
+                      seq=seq, reason="retry_limit")
+                return self.transfer
+            self.transfer["sent"] += 1
+
+        fin = Packet(self.id, dst, 8, "FIN", transfer_id, len(messages), "")
+        if not self._send_reliably(fin):
+            self.transfer["status"] = "FAILED"
+            event(self.run_id, self.id, "failure", fin, self.neighbor,
+                  seq=fin.seq, reason="fin_retry_limit")
+            return self.transfer
+
+        self.transfer["status"] = "COMPLETE"
+        event(self.run_id, self.id, "transfer_complete", fin, self.neighbor,
+              seq=fin.seq, count=len(messages))
+        return self.transfer
+
+    def _log_seq(self, name, packet, **details):
+        event(self.run_id, self.id, name, packet, self.neighbor,
+              seq=packet.seq, **details)
+
+    def _send_reliably(self, packet):
+        """Send one packet and wait for its ACK; False once retries run out."""
+        data = packet.to_bytes()
+        retries = 0
+        self._send_packet(data)
+        deadline = time.monotonic() + self.timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if retries >= self.max_retries:
+                    return False
+                retries += 1
+                self._log_seq("retransmit", packet, retries=retries)
+                self._send_packet(data)
+                deadline = time.monotonic() + self.timeout
+                continue
+            ready, _, _ = select.select([self.sock], [], [], remaining)
+            if not ready:
+                continue
+            incoming = self.receive()
+            if incoming is None:
+                continue
+            if (incoming.type == "ACK" and incoming.src == packet.dst
+                    and incoming.dst == packet.src and incoming.id == packet.id
+                    and incoming.seq == packet.seq):
+                self._log_seq("ack_received", incoming)
+                return True
+            self._process(incoming)
+
+    def _send_ack(self, packet):
+        ack = Packet(self.id, packet.src, 8, "ACK", packet.id, packet.seq, "")
+        self._send_packet(ack.to_bytes())
+        self._log_seq("ack_sent", ack)
+
+    def _handle_data(self, packet):
+        key = (packet.src, packet.id)
+        expected = self.expected.get(key, 0)
+        if packet.seq < expected:
+            self._log_seq("duplicate", packet)
+            self._send_ack(packet)  # the earlier ACK may have been lost
+            return False
+        if packet.seq > expected:
+            self._log_seq("drop", packet, reason="out_of_order")
+            return False
+        self._send_ack(packet)
+        self.expected[key] = expected + 1
+        self._log_seq("deliver", packet)
+        return True
+
+    def _handle_fin(self, packet):
+        key = (packet.src, packet.id)
+        if key in self.completed:
+            self._log_seq("duplicate", packet)
+            self._send_ack(packet)
+            return False
+        if packet.seq != self.expected.get(key, 0):
+            self._log_seq("drop", packet, reason="unexpected_fin_sequence")
+            return False
+        self._send_ack(packet)
+        self.completed.add(key)
+        self._log_seq("complete", packet)
+        return True
+
+    def _process(self, packet):
+        """Handle one received packet; True if new DATA/FIN was accepted.
+
+        Best-effort hosts echo DATA exactly as before. Reliable hosts
+        acknowledge DATA/FIN instead and do not echo it.
+        """
+        if self.mode == "best_effort":
+            if packet.type == "DATA":
+                self.echo(packet)
+                return True
+            return False
+        if packet.type == "DATA":
+            return self._handle_data(packet)
+        if packet.type == "FIN":
+            return self._handle_fin(packet)
+        if packet.type == "ACK":
+            self._log_seq("ack_received", packet)
+        return False
+
     def echo(self, packet):
         if packet.type == "DATA":
-            response = Packet(self.id, packet.src, 8, "RESPONSE", packet.id, packet.payload)
+            response = Packet(self.id, packet.src, 8, "RESPONSE", packet.id, packet.seq, packet.payload)
             self._send_packet(response.to_bytes())
 
     def interactive(self, dst, timeout=3.0):
@@ -174,9 +324,12 @@ class Host:
             if self.sock in ready:
                 packet = self.receive()
                 if packet is not None:
-                    if packet.type == "DATA":
-                        print(f"Received from {packet.src}: {packet.payload!r}")
-                        self.echo(packet)
+                    if packet.type in ("DATA", "FIN", "ACK"):
+                        delivered = self._process(packet)
+                        if delivered and packet.type == "DATA":
+                            print(f"Received from {packet.src}: {packet.payload!r}")
+                        elif delivered and packet.type == "FIN":
+                            print(f"Transfer from {packet.src} completed.")
                     elif packet.id in pending:
                         request, deadline = pending[packet.id]
                         if (time.monotonic() < deadline and packet.src == request.dst
@@ -196,7 +349,7 @@ class Host:
                     inputs.remove(sys.stdin)  # Keep echoing after terminal input closes.
                 else:
                     message = line.rstrip("\n")
-                    request = Packet(self.id, dst, 8, "DATA", self.packet_id, message)
+                    request = Packet(self.id, dst, 8, "DATA", self.packet_id, 0, message)
                     try:
                         self.send(message, dst)
                     except PacketError as exc:
@@ -213,7 +366,7 @@ class Host:
             except OSError:
                 break
             if packet is not None:
-                self.echo(packet)
+                self._process(packet)
 
     def close(self):
         self.sender.close()

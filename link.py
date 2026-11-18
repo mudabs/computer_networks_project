@@ -15,7 +15,7 @@ def event(run_id, device, name, packet=None, next_hop='-', **details):
                   msg_id=packet.id if packet else '-',
                   type=packet.type if packet else '-',
                   src=packet.src if packet else '-', dst=packet.dst if packet else '-',
-                  next_hop=next_hop, hop_limit=packet.hop_limit if packet else '-')
+                  next_hop=next_hop, ttl=packet.ttl if packet else '-')
     fields.update(details)
     logger.info(' '.join(f'{key}={value}' for key, value in fields.items()))
 
