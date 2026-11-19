@@ -16,6 +16,7 @@ import math
 import queue
 import threading
 import time
+from collections import deque
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -265,6 +266,151 @@ class NetworkController:
                 break
 
 
+class _Job:
+    """One visual-only animation on a directed link."""
+
+    __slots__ = ("kind", "packet_type", "delay_ms", "item", "steps", "start", "end")
+
+    def __init__(self, kind, packet_type=None, delay_ms=0.0):
+        self.kind, self.packet_type, self.delay_ms = kind, packet_type, delay_ms
+        self.item = self.start = self.end = None
+        self.steps = 0
+
+
+class PacketAnimator:
+    """Bounded FIFO packet animations, one queue per directed link.
+
+    Visual only: it reads already-parsed log events and never touches the
+    network.  Packets on one link animate strictly one after another, links
+    animate independently, and everything is driven by ``after`` callbacks.
+    """
+
+    STEP_MS = 30
+    MOVE_STEPS = 20
+    DELAY_MIN_STEPS, DELAY_MAX_STEPS = 5, 20   # 150-600 ms, whatever delay_ms is
+    DROP_STEPS = 10
+    MAX_PER_LINK = 40
+    MAX_TOTAL = 200
+
+    def __init__(self, canvas, after, positions):
+        self.canvas, self.after, self.positions = canvas, after, positions
+        self.queues = {}      # (source, next_hop) -> deque of waiting _Job
+        self.active = set()   # links with a job currently on screen
+        self.total = 0        # jobs waiting across all queues
+        self.discarded = 0    # old visual entries dropped by the bounds
+        self.closed = False
+
+    def handle(self, event_fields):
+        """Queue the visual for a send/delay/drop event.
+
+        Returns True when the event was drawn on a link, False otherwise (the
+        caller may then fall back to flashing the device).
+        """
+        name = event_fields.get("event")
+        if name not in ("send", "delay", "drop") or self.closed:
+            return False
+        link = (event_fields.get("device"), event_fields.get("next_hop"))
+        known = self.positions()
+        if link[0] not in known or link[1] not in known:
+            return False
+        if name == "send":
+            job = _Job("send", event_fields.get("type"))
+        elif name == "delay":
+            try:
+                delay_ms = float(event_fields.get("delay_ms", 0))
+            except ValueError:
+                delay_ms = 0.0
+            job = _Job("delay", delay_ms=delay_ms)
+        else:
+            job = _Job("drop")
+        self._enqueue(link, job)
+        return True
+
+    def close(self):
+        """Stop scheduling; pending callbacks become no-ops."""
+        self.closed = True
+        self.queues.clear()
+        self.active.clear()
+        self.total = 0
+
+    def _enqueue(self, link, job):
+        queue_ = self.queues.setdefault(link, deque())
+        if len(queue_) >= self.MAX_PER_LINK:
+            queue_.popleft()
+            self.total -= 1
+            self.discarded += 1
+        queue_.append(job)
+        self.total += 1
+        if self.total > self.MAX_TOTAL:
+            longest = max(self.queues, key=lambda key: len(self.queues[key]))
+            self.queues[longest].popleft()
+            self.total -= 1
+            self.discarded += 1
+        if link not in self.active:
+            self._start_next(link)
+
+    def _start_next(self, link):
+        queue_ = self.queues.get(link)
+        while queue_:
+            job = queue_.popleft()
+            self.total -= 1
+            try:
+                begun = self._begin(job, link)
+            except tk.TclError:
+                self.close()
+                return
+            if begun:
+                self.active.add(link)
+                self.after(self.STEP_MS, self._step, link, job, 1)
+                return
+        self.queues.pop(link, None)
+        self.active.discard(link)
+
+    def _begin(self, job, link):
+        positions = self.positions()
+        if link[0] not in positions or link[1] not in positions:
+            return False  # layout changed since it was queued; skip it
+        (x1, y1), (x2, y2) = positions[link[0]], positions[link[1]]
+        job.start, job.end = (x1, y1), (x2, y2)
+        if job.kind == "send":
+            job.steps = self.MOVE_STEPS
+            color = ACCENT if job.packet_type == "DATA" else GOOD
+            job.item = self.canvas.create_oval(
+                x1 - 8, y1 - 8, x1 + 8, y1 + 8, fill=color, outline="#ffffff", width=1
+            )
+        elif job.kind == "delay":
+            job.steps = max(self.DELAY_MIN_STEPS, min(
+                self.DELAY_MAX_STEPS, round(job.delay_ms / self.STEP_MS)))
+            mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+            job.item = self.canvas.create_oval(
+                mx - 8, my - 8, mx + 8, my + 8, fill=WARN, outline="#ffffff", width=1
+            )
+        else:
+            job.steps = self.DROP_STEPS
+            job.item = self.canvas.create_line(x1, y1, x2, y2, fill=BAD, width=5)
+        return True
+
+    def _step(self, link, job, step):
+        if self.closed:
+            return
+        try:
+            if step > job.steps:
+                self.canvas.delete(job.item)
+                self.active.discard(link)
+                self._start_next(link)
+                return
+            if job.kind == "send":
+                fraction = step / job.steps
+                x = job.start[0] + (job.end[0] - job.start[0]) * fraction
+                y = job.start[1] + (job.end[1] - job.start[1]) * fraction
+                self.canvas.coords(job.item, x - 8, y - 8, x + 8, y + 8)
+            elif job.kind == "delay":
+                self.canvas.itemconfigure(job.item, width=1 + 2 * (step % 2))
+            self.after(self.STEP_MS, self._step, link, job, step + 1)
+        except tk.TclError:
+            self.close()  # window closed or canvas gone
+
+
 class NetworkGUI(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -313,6 +459,7 @@ class NetworkGUI(tk.Tk):
 
         self._configure_styles()
         self._build_layout()
+        self.animator = PacketAnimator(self.canvas, self.after, lambda: self.node_positions)
         self._refresh_route_controls()
         self._refresh_condition_controls()
         self._draw_topology()
@@ -1163,10 +1310,13 @@ class NetworkGUI(tk.Tk):
                 event_name = fields.get("event")
                 if event_name == "send":
                     self.packet_count_var.set(f"{self._increment_stat(self.packet_count_var.get())} sent")
-                    self._animate_packet(fields)
+                    self.animator.handle(fields)
+                elif event_name == "delay":
+                    self.animator.handle(fields)
                 elif event_name == "drop":
                     self.drop_count_var.set(f"{self._increment_stat(self.drop_count_var.get())} dropped")
-                    self._flash_device(fields.get("device"))
+                    if not self.animator.handle(fields):
+                        self._flash_device(fields.get("device"))
                 elif event_name == "late_response":
                     self.status_var.set("Late response observed")
                     self.status_badge.configure(bg="#49391a", fg=WARN)
@@ -1180,41 +1330,6 @@ class NetworkGUI(tk.Tk):
             return int(value.split()[0]) + 1
         except (ValueError, IndexError):
             return 1
-
-    def _animate_packet(self, fields):
-        source = fields.get("device")
-        destination = fields.get("next_hop")
-        if source not in self.node_positions or destination not in self.node_positions:
-            return
-        x1, y1 = self.node_positions[source]
-        x2, y2 = self.node_positions[destination]
-        color = ACCENT if fields.get("type") == "DATA" else GOOD
-        packet = self.canvas.create_oval(
-            x1 - 8, y1 - 8, x1 + 8, y1 + 8,
-            fill=color, outline="#ffffff", width=1
-        )
-
-        def move(step=0):
-            if step > 20:
-                try:
-                    self.canvas.delete(packet)
-                except tk.TclError:
-                    pass
-                return
-            fraction = step / 20
-            try:
-                self.canvas.coords(
-                    packet,
-                    x1 + (x2 - x1) * fraction - 8,
-                    y1 + (y2 - y1) * fraction - 8,
-                    x1 + (x2 - x1) * fraction + 8,
-                    y1 + (y2 - y1) * fraction + 8,
-                )
-                self.after(30, move, step + 1)
-            except tk.TclError:
-                return
-
-        move()
 
     def _flash_device(self, device_id):
         item = self.node_items.get(device_id)
@@ -1249,6 +1364,7 @@ class NetworkGUI(tk.Tk):
         if self.probe_in_flight or self.transfer_in_flight:
             if not messagebox.askyesno("Operation in progress", "Stop the demo and close the GUI?"):
                 return
+        self.animator.close()
         self.controller.stop()
         logging.getLogger().removeHandler(self.log_handler)
         self.destroy()
