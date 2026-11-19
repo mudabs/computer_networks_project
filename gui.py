@@ -586,8 +586,8 @@ class NetworkGUI(tk.Tk):
         self.observe_late_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Starting network…")
         self.result_var = tk.StringVar(value="No probe sent yet")
-        self.path_var = tk.StringVar(value="Path: —")
-        self.run_var = tk.StringVar(value="Run: —")
+        self.path_var = tk.StringVar(value="Path: -")
+        self.run_var = tk.StringVar(value="Run: -")
         self.packet_count_var = tk.StringVar(value="0 sent")
         self.drop_count_var = tk.StringVar(value="0 dropped")
         self.metrics = TransferMetrics()
@@ -1017,7 +1017,7 @@ class NetworkGUI(tk.Tk):
 
     def _endpoints_changed(self):
         self._draw_topology()
-        self.status_var.set("Endpoint change ready — network restarts on send")
+        self.status_var.set("Endpoint change ready - network restarts on send")
 
     def _restart_network(self, show_errors=True):
         if self.transfer_in_flight:
@@ -1126,7 +1126,7 @@ class NetworkGUI(tk.Tk):
         self.transfer_in_flight = False
         self._set_transfer_controls(running=False)
         self.result_var.set("Transfer stopped")
-        self.status_var.set("Transfer stopped — network restarts on send")
+        self.status_var.set("Transfer stopped - network restarts on send")
         self.status_badge.configure(bg="#49391a", fg=WARN)
 
     def _poll_transfer(self):
@@ -1140,7 +1140,7 @@ class NetworkGUI(tk.Tk):
         self.active_source = self.active_destination = None
         self._set_transfer_controls(running=False)
         status = outcome["status"]
-        prefix = f"{self.active_scenario} — " if self.active_scenario else ""
+        prefix = f"{self.active_scenario} - " if self.active_scenario else ""
         if status == "COMPLETE":
             self.result_var.set(f"{prefix}Transfer COMPLETE: {outcome['sent']}/{outcome['count']} acknowledged")
             self.status_var.set("Transfer complete")
