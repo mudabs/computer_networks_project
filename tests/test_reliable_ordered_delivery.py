@@ -65,10 +65,13 @@ class LossFreeOrderedDeliveryTests(unittest.TestCase):
         thread.start()
         self.threads.append(thread)
 
-    def start_network(self):
-        """Start routers A, B, D and a recording reliable H2 receiver."""
+    def start_routers(self):
         for router_id in ("A", "B", "D"):
             self.start(Router(router_id, self.config, run_id="ordered"))
+
+    def start_network(self):
+        """Start routers A, B, D and a recording reliable H2 receiver."""
+        self.start_routers()
 
         receiver = Host("H2", self.config, run_id="ordered", mode="reliable")
         record = types.SimpleNamespace(
@@ -210,6 +213,43 @@ class LossFreeOrderedDeliveryTests(unittest.TestCase):
         self.assertEqual(final_acks[0], final_acks[1])
         self.assertEqual(dropped[0], final_acks[0])
         self.assertIn(("H1", result["id"]), receiver.completed)
+
+    def test_unreachable_destination_fails_after_bounded_retries(self):
+        self.start_routers()
+
+        # No H2 host: a plain socket owns H2's address but never reads or
+        # replies, so routers' sends succeed on every platform.
+        address = self.config.get_address("H2")
+        black_hole = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(black_hole.close)
+        black_hole.bind((address["ip"], address["port"]))
+
+        sender = Host(
+            "H1", self.config, run_id="ordered", mode="reliable",
+            timeout=0.1, max_retries=2,
+        )
+        self.devices.append(sender)
+
+        transmissions = []  # (type, seq, serialized bytes) of every DATA/FIN
+        link_send = sender.sender.send
+
+        def recording_send(data, next_hop):
+            packet = Packet.from_bytes(data)
+            if packet.type in ("DATA", "FIN"):
+                transmissions.append((packet.type, packet.seq, data))
+            link_send(data, next_hop)
+
+        sender.sender.send = recording_send
+
+        result = sender.start_transfer(["one"], "H2")  # returns, never hangs
+
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["sent"], 0)
+        # Initial send plus max_retries retransmissions, all the same DATA seq 0.
+        self.assertEqual(len(transmissions), 3)
+        self.assertEqual({(kind, seq) for kind, seq, _ in transmissions}, {("DATA", 0)})
+        self.assertEqual(len({data for _, _, data in transmissions}), 1)
+        self.assertFalse([t for t in transmissions if t[0] == "FIN"])
 
 
 if __name__ == "__main__":
