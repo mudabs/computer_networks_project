@@ -65,6 +65,10 @@ def parse_args(config):
     args = parser.parse_args()
     if args.probe and args.transfer:
         parser.error("use either --probe or --transfer, not both")
+    if args.transfer and args.mode != "reliable":
+        parser.error("--transfer requires --mode reliable")
+    if args.probe and args.mode == "reliable":
+        parser.error("--probe is best-effort only; use --transfer for reliable delivery")
     for option, destination in (("--probe", args.probe), ("--transfer", args.transfer)):
         if destination:
             if args.device is None or config.get_device(args.device)["type"] != "host":
@@ -114,7 +118,8 @@ def run_device(device_id, config, run_id, probe=None, message=None,
             result = device.start_transfer(messages, transfer)
             print(f"TRANSFER {result['status']}")
             return 0 if result["status"] == "COMPLETE" else 1
-        if device_type == "host" and sys.stdin.isatty() and not headless:
+        if (device_type == "host" and mode == "best_effort"
+                and sys.stdin.isatty() and not headless):
             peers = [name for name, entry in config.data["devices"].items()
                      if entry["type"] == "host" and name != device_id]
             if len(peers) != 1:

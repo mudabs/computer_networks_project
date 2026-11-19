@@ -99,10 +99,46 @@ class TestHeadlessLaunch(unittest.TestCase):
         device.interactive.assert_not_called()
         device.run.assert_called_once()
 
+    def test_reliable_host_is_receive_only_even_on_a_tty(self):
+        import main
+
+        with patch("main.Host") as host_cls, patch(
+            "main.sys.stdin.isatty", return_value=True
+        ):
+            device = host_cls.return_value
+            main.run_device("H1", Config(), "run", mode="reliable")
+        device.interactive.assert_not_called()
+        device.run.assert_called_once()
+
     def test_normal_tty_host_stays_interactive(self):
         device = self._run_host(isatty=True, headless=False)
         device.interactive.assert_called_once()
         device.run.assert_not_called()
+
+
+class TestModeCombinations(unittest.TestCase):
+    def _parse(self, *argv):
+        import main
+
+        with patch("sys.argv", ["main.py", *argv]):
+            return main.parse_args(Config())
+
+    def test_transfer_requires_reliable_mode(self):
+        with patch("sys.stderr"), self.assertRaises(SystemExit) as ctx:
+            self._parse("H1", "--transfer", "H2", "--messages", "a")
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_probe_is_rejected_in_reliable_mode(self):
+        with patch("sys.stderr") as err, self.assertRaises(SystemExit):
+            self._parse("H1", "--mode", "reliable", "--probe", "H2")
+        written = "".join(c.args[0] for c in err.write.call_args_list)
+        self.assertIn("use --transfer", written)
+
+    def test_valid_combinations_still_parse(self):
+        args = self._parse("H1", "--mode", "reliable", "--transfer", "H2", "--messages", "a")
+        self.assertEqual(args.transfer, "H2")
+        args = self._parse("H1", "--probe", "H2")
+        self.assertEqual(args.mode, "best_effort")
 
 
 if __name__ == "__main__":
