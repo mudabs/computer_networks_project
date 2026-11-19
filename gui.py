@@ -104,6 +104,106 @@ def parse_transfer_settings(source, destination, message, count_text,
             "max_retries": max_retries}
 
 
+class TransferMetrics:
+    """Counters for the current reliable transfer, fed by parsed log events.
+
+    Pure logic (no Tk): only events whose ``run_id`` matches the current run
+    count, so late records from earlier GUI runs are ignored.
+    """
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self, run_id=None, total=0):
+        self.run_id, self.total = run_id, total
+        self.delivered_keys = set()  # (src, msg_id, seq): a message counts once
+        self.retries = self.duplicates = self.failures = 0
+
+    @property
+    def delivered(self):
+        return len(self.delivered_keys)
+
+    def apply(self, fields):
+        """Update from one event; True if any counter changed."""
+        if self.run_id is None or fields.get("run_id") != self.run_id:
+            return False
+        name = fields.get("event")
+        if name == "transfer_start":
+            count = fields.get("count", "")
+            if not count.isdigit():
+                return False
+            self.total = int(count)
+        elif name == "deliver" and fields.get("type") == "DATA":
+            key = (fields.get("src"), fields.get("msg_id"), fields.get("seq"))
+            if key in self.delivered_keys:
+                return False
+            self.delivered_keys.add(key)
+        elif name == "retransmit":
+            self.retries += 1
+        elif name == "duplicate":
+            self.duplicates += 1
+        elif name == "failure":
+            self.failures += 1
+        else:
+            return False
+        return True
+
+    def summary(self):
+        return (f"Delivered: {self.delivered}/{self.total}   ·   Retries: {self.retries}"
+                f"   ·   Duplicates: {self.duplicates}   ·   Failures: {self.failures}")
+
+
+# Fixed settings and seeds make every scenario reproducible.  With these values
+# (loss 0.4, 4 messages + FIN, up to 5 retries) the seeded loss sequences give
+# two lost packets and a completed transfer for the two "dropped" scenarios.
+SCENARIO_LOSS = 0.4
+SCENARIOS = {
+    "normal": {"label": "Normal delivery", "count": 4, "timeout": 0.3, "max_retries": 5},
+    "dropped_data": {"label": "Dropped DATA", "count": 4, "timeout": 0.3, "max_retries": 5,
+                     "seed": 1},
+    "dropped_ack": {"label": "Dropped ACK", "count": 4, "timeout": 0.3, "max_retries": 5,
+                    "seed": 2},
+    "unreachable": {"label": "Unreachable destination (expected FAILED)", "count": 3,
+                    "timeout": 0.3, "max_retries": 2},
+}
+
+
+def build_scenario(name, base_network, base_routes, source, destination):
+    """In-memory configuration for a reliable demo scenario.
+
+    Always starts from deep copies of the given pristine data, so the inputs
+    (and the JSON files they came from) are never modified and "normal"
+    restores ordinary conditions and routes.
+    """
+    if name not in SCENARIOS:
+        raise ValueError(f"Unknown scenario {name!r}")
+    if source == destination:
+        raise ValueError("Source and destination must be different hosts.")
+    plan = dict(SCENARIOS[name])
+    network = copy.deepcopy(base_network)
+    routes = copy.deepcopy(base_routes)
+    network["conditions"] = []
+
+    def first_hop(host):
+        hops = Config(network_data=network, route_data=routes).get_neighbors(host)
+        if not hops:
+            raise ValueError(f"{host} has no neighbor")
+        return hops[0]
+
+    if name == "dropped_data":  # the source's first-hop link loses DATA
+        network["conditions"] = [{"from": source, "to": first_hop(source),
+                                  "loss": SCENARIO_LOSS, "delay_ms": 0,
+                                  "seed": plan["seed"]}]
+    elif name == "dropped_ack":  # the destination's first-hop link loses ACKs
+        network["conditions"] = [{"from": destination, "to": first_hop(destination),
+                                  "loss": SCENARIO_LOSS, "delay_ms": 0,
+                                  "seed": plan["seed"]}]
+    elif name == "unreachable":  # the source's first router forgets the destination
+        routes[first_hop(source)].pop(destination, None)
+    plan["network_data"], plan["route_data"] = network, routes
+    return plan
+
+
 class NetworkController:
     """Run the real network devices in background threads for the GUI."""
 
@@ -490,6 +590,9 @@ class NetworkGUI(tk.Tk):
         self.run_var = tk.StringVar(value="Run: —")
         self.packet_count_var = tk.StringVar(value="0 sent")
         self.drop_count_var = tk.StringVar(value="0 dropped")
+        self.metrics = TransferMetrics()
+        self.transfer_var = tk.StringVar(value="No reliable transfer yet")
+        self.active_scenario = None
         self.probe_in_flight = False
         self.transfer_in_flight = False
         self.observe_late = False
@@ -587,10 +690,32 @@ class NetworkGUI(tk.Tk):
         )
         self.status_badge.pack(side="right", padx=28, pady=19)
 
-        self.sidebar = ttk.Frame(self, style="Panel.TFrame", padding=(20, 16))
-        self.sidebar.grid(row=1, column=0, sticky="nsew")
-        self.sidebar.configure(width=self.sidebar_width)
-        self.sidebar.grid_propagate(False)
+        # The controls are taller than the default window, so the sidebar
+        # scrolls instead of squeezing its lower buttons out of view.
+        shell = ttk.Frame(self, style="Panel.TFrame")
+        shell.grid(row=1, column=0, sticky="nsew")
+        shell.configure(width=self.sidebar_width)
+        shell.grid_propagate(False)
+        shell.rowconfigure(0, weight=1)
+        shell.columnconfigure(0, weight=1)
+        side_canvas = tk.Canvas(shell, bg=PANEL, highlightthickness=0, bd=0)
+        side_scroll = ttk.Scrollbar(shell, orient="vertical", command=side_canvas.yview)
+        side_canvas.configure(yscrollcommand=side_scroll.set)
+        side_canvas.grid(row=0, column=0, sticky="nsew")
+        side_scroll.grid(row=0, column=1, sticky="ns")
+        self.sidebar = ttk.Frame(side_canvas, style="Panel.TFrame", padding=(20, 16))
+        sidebar_window = side_canvas.create_window((0, 0), window=self.sidebar, anchor="nw")
+        self.sidebar.bind("<Configure>", lambda _event: side_canvas.configure(
+            scrollregion=side_canvas.bbox("all")))
+        side_canvas.bind("<Configure>", lambda event: side_canvas.itemconfigure(
+            sidebar_window, width=event.width))
+
+        def wheel(event):
+            if side_canvas.yview() != (0.0, 1.0):
+                side_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+        shell.bind("<Enter>", lambda _event: shell.bind_all("<MouseWheel>", wheel))
+        shell.bind("<Leave>", lambda _event: shell.unbind_all("<MouseWheel>"))
         self._build_sidebar()
 
         self.content = ttk.Frame(self, style="Panel.TFrame", padding=(0, 0, 20, 20))
@@ -654,6 +779,19 @@ class NetworkGUI(tk.Tk):
             state="disabled"
         )
         self.stop_button.pack(fill="x", pady=(0, 14))
+
+        ttk.Label(self.sidebar, text="RELIABLE SCENARIOS", style="Section.TLabel").pack(
+            anchor="w", pady=(0, 6)
+        )
+        scenario_grid = tk.Frame(self.sidebar, bg=PANEL)
+        scenario_grid.pack(fill="x", pady=(0, 14))
+        scenario_grid.columnconfigure((0, 1), weight=1, uniform="scenario")
+        for index, (key, text) in enumerate((
+                ("normal", "Normal"), ("dropped_data", "Dropped DATA"),
+                ("dropped_ack", "Dropped ACK"), ("unreachable", "Unreachable"))):
+            ttk.Button(
+                scenario_grid, text=text, command=lambda key=key: self._run_scenario(key)
+            ).grid(row=index // 2, column=index % 2, sticky="ew", padx=1, pady=1)
 
         result_card = tk.Frame(self.sidebar, bg=PANEL_2, padx=12, pady=10)
         result_card.pack(fill="x", pady=(0, 16))
@@ -719,6 +857,12 @@ class NetworkGUI(tk.Tk):
         self._stat(stats, 0, "ROUTE", self.path_var)
         self._stat(stats, 1, "TRAFFIC", self.packet_count_var)
         self._stat(stats, 2, "DROPS", self.drop_count_var)
+        card = tk.Frame(stats, bg=PANEL_2, padx=10, pady=7)
+        card.grid(row=1, column=0, columnspan=3, sticky="ew", padx=3, pady=(6, 0))
+        tk.Label(card, text="RELIABLE TRANSFER", bg=PANEL_2, fg=MUTED,
+                 font=("Segoe UI", 8, "bold")).pack(anchor="w")
+        tk.Label(card, textvariable=self.transfer_var, bg=PANEL_2, fg=TEXT,
+                 font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
 
         lower = ttk.Frame(self.content, style="Panel.TFrame")
         lower.grid(row=1, column=0, sticky="ew", pady=(14, 0))
@@ -909,7 +1053,28 @@ class NetworkGUI(tk.Tk):
                 messagebox.showerror("Could not start network", str(exc))
             return False
 
-    def _start_transfer(self):
+    def _run_scenario(self, name):
+        if self.probe_in_flight or self.transfer_in_flight:
+            return
+        source, destination = self.source_var.get(), self.destination_var.get()
+        try:
+            plan = build_scenario(name, self.base_network, self.base_routes,
+                                  source, destination)
+        except ValueError as exc:
+            messagebox.showerror("Scenario unavailable", str(exc))
+            return
+        # In-memory only: the Routes/Conditions tabs show the scenario's settings.
+        self.network_data, self.route_data = plan["network_data"], plan["route_data"]
+        self.observe_late = False
+        self.observe_late_var.set(False)
+        self.count_var.set(str(plan["count"]))
+        self.timeout_var.set(str(plan["timeout"]))
+        self.retries_var.set(str(plan["max_retries"]))
+        self._refresh_route_controls()
+        self._refresh_condition_controls()
+        self._start_transfer(scenario=plan["label"])
+
+    def _start_transfer(self, scenario=None):
         if self.probe_in_flight or self.transfer_in_flight:
             return
         source, destination = self.source_var.get(), self.destination_var.get()
@@ -932,6 +1097,10 @@ class NetworkGUI(tk.Tk):
             self.active_source, self.active_destination = source, destination
             self.run_var.set(f"Run: {self.controller.run_id}")
             self._draw_topology()
+            # Reset before the worker starts so every event of this run is counted.
+            self.metrics.reset(self.controller.run_id, len(settings["messages"]))
+            self.transfer_var.set(self.metrics.summary())
+            self.active_scenario = scenario
             self.controller.begin_transfer(settings["messages"])
         except Exception as exc:
             self.controller.stop()
@@ -943,7 +1112,8 @@ class NetworkGUI(tk.Tk):
             return
         self.transfer_in_flight = True
         self._set_transfer_controls(running=True)
-        self.result_var.set(f"Transferring {len(settings['messages'])} message(s)…")
+        prefix = f"{scenario}: " if scenario else ""
+        self.result_var.set(f"{prefix}transferring {len(settings['messages'])} message(s)…")
         self.status_var.set("Reliable transfer running")
         self.status_badge.configure(bg="#173c3a", fg=GOOD)
 
@@ -970,12 +1140,13 @@ class NetworkGUI(tk.Tk):
         self.active_source = self.active_destination = None
         self._set_transfer_controls(running=False)
         status = outcome["status"]
+        prefix = f"{self.active_scenario} — " if self.active_scenario else ""
         if status == "COMPLETE":
-            self.result_var.set(f"Transfer COMPLETE: {outcome['sent']}/{outcome['count']} acknowledged")
+            self.result_var.set(f"{prefix}Transfer COMPLETE: {outcome['sent']}/{outcome['count']} acknowledged")
             self.status_var.set("Transfer complete")
             self.status_badge.configure(bg="#173c3a", fg=GOOD)
         elif status == "FAILED":
-            self.result_var.set(f"Transfer FAILED: {outcome['sent']}/{outcome['count']} acknowledged")
+            self.result_var.set(f"{prefix}Transfer FAILED: {outcome['sent']}/{outcome['count']} acknowledged")
             self.status_var.set("Transfer failed")
             self.status_badge.configure(bg="#4a1d2a", fg=BAD)
         else:
@@ -1344,6 +1515,7 @@ class NetworkGUI(tk.Tk):
 
     def _drain_records(self):
         self._poll_transfer()
+        metrics_changed = False
         try:
             while True:
                 record = self.records.get_nowait()
@@ -1351,6 +1523,7 @@ class NetworkGUI(tk.Tk):
                 self._append_log(self.log_handler.format(record))
                 fields = parse_event(message)
                 event_name = fields.get("event")
+                metrics_changed |= self.metrics.apply(fields)
                 if event_name == "send":
                     self.packet_count_var.set(f"{self._increment_stat(self.packet_count_var.get())} sent")
                     self.animator.handle(fields)
@@ -1365,6 +1538,8 @@ class NetworkGUI(tk.Tk):
                     self.status_badge.configure(bg="#49391a", fg=WARN)
         except queue.Empty:
             pass
+        if metrics_changed:
+            self.transfer_var.set(self.metrics.summary())
         self.after(75, self._drain_records)
 
     @staticmethod
