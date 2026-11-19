@@ -133,6 +133,15 @@ Start the receiver (`python3 main.py H2 --mode reliable`) and the routers, then 
 It prints `TRANSFER COMPLETE` or `TRANSFER FAILED` (exit code 1) once retries run out.
 Reliable receivers ACK DATA/FIN instead of echoing; best-effort hosts behave as before.
 
+**Receiver grace period.** After a reliable receiver accepts a valid FIN and sends its ACK, it keeps
+serving for a bounded grace period. If the sender did not get the FIN ACK and retransmits the final
+DATA or FIN, the receiver re-ACKs it. When the period expires, `Host.run()` returns without closing
+the socket (the owner closes the host), so `main.py` exits with status 0. By default the period is
+`timeout * (max_retries + 1)` of the receiver: `main.py` passes `--timeout` (default 3 s) and uses 3
+retries, so 12 s unless you pass a different `--timeout`. A receiver that has not accepted a FIN, and
+every best-effort host, keeps running until Ctrl+C. The packet format and the sender's COMPLETE or
+FAILED behavior are unchanged.
+
 For a forced-drop demonstration on the lower path, set `conditions` to
 `[{"from":"A","to":"C","loss":1.0,"delay_ms":0,"seed":42}]`.
 Restart A, send one H1 probe, and observe A's `reason=injected_loss` and H1's

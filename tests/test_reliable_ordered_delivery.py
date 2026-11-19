@@ -251,6 +251,63 @@ class LossFreeOrderedDeliveryTests(unittest.TestCase):
         self.assertEqual(len({data for _, _, data in transmissions}), 1)
         self.assertFalse([t for t in transmissions if t[0] == "FIN"])
 
+    def start_running_receiver(self, grace_period):
+        """A reliable H2 driven by Host.run() itself; ``exited`` is set when run() returns."""
+        self.start_routers()
+        receiver = Host("H2", self.config, run_id="ordered", mode="reliable",
+                        timeout=0.2, max_retries=3, grace_period=grace_period)
+        self.devices.append(receiver)
+        exited = threading.Event()
+
+        def serve_receiver():
+            receiver.run()
+            exited.set()
+
+        thread = threading.Thread(target=serve_receiver, daemon=True)
+        thread.start()
+        self.threads.append(thread)
+        return receiver, exited
+
+    def test_run_exits_after_the_grace_period_once_the_transfer_completes(self):
+        receiver, exited = self.start_running_receiver(grace_period=0.4)
+        sender = Host("H1", self.config, run_id="ordered", mode="reliable",
+                      timeout=0.2, max_retries=3)
+        self.devices.append(sender)
+
+        result = sender.start_transfer(MESSAGES, "H2")
+
+        self.assertEqual(result["status"], "COMPLETE")  # sender behavior unchanged
+        self.assertTrue(exited.wait(5), "receiver run() never exited")  # bounded, no sleep
+        self.assertIn(("H1", result["id"]), receiver.completed)
+        self.assertIsNotNone(receiver.grace_deadline)
+        self.assertNotEqual(receiver.sock.fileno(), -1)  # run() did not close the socket
+
+    def test_dropped_final_ack_is_reacked_during_grace_by_run(self):
+        receiver, exited = self.start_running_receiver(grace_period=0.6)
+        final_acks, dropped = [], []
+        receiver_send = receiver.sender.send
+
+        def lossy_ack_send(data, next_hop, **marks):
+            packet = Packet.from_bytes(data)
+            if packet.type == "ACK" and packet.seq == len(MESSAGES):  # the FIN's ACK
+                final_acks.append(data)
+                if not dropped:
+                    dropped.append(data)  # deliberate one-time drop
+                    return
+            receiver_send(data, next_hop, **marks)
+
+        receiver.sender.send = lossy_ack_send
+        sender = Host("H1", self.config, run_id="ordered", mode="reliable",
+                      timeout=0.2, max_retries=3)
+        self.devices.append(sender)
+
+        result = sender.start_transfer(MESSAGES, "H2")
+
+        self.assertEqual(len(dropped), 1)
+        self.assertEqual(result["status"], "COMPLETE")  # the re-ACK arrived in the grace period
+        self.assertEqual(len(final_acks), 2)            # dropped copy + re-ACK
+        self.assertEqual(final_acks[0], final_acks[1])
+        self.assertTrue(exited.wait(5), "receiver run() never exited")
 
 if __name__ == "__main__":
     unittest.main()

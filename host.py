@@ -11,7 +11,7 @@ from packet import MAX_ID, MAX_SIZE, Packet, PacketError
 
 class Host:
     def __init__(self, host_id, config: Config, run_id="default",
-                 timeout=1.0, max_retries=3, mode="best_effort"):
+                 timeout=1.0, max_retries=3, mode="best_effort", grace_period=None):
         if config.get_device(host_id)["type"] != "host":
             raise ValueError(f"'{host_id}' is not a host")
         if not math.isfinite(timeout) or timeout <= 0:
@@ -20,7 +20,16 @@ class Host:
             raise ValueError("max_retries must be non-negative")
         if mode not in ("best_effort", "reliable"):
             raise ValueError("mode must be best_effort or reliable")
+        if grace_period is None:
+            # Long enough to re-ACK a final packet the sender retransmits at its
+            # retry interval until its retries run out.
+            grace_period = timeout * (max_retries + 1)
+        elif (isinstance(grace_period, bool) or not isinstance(grace_period, (int, float))
+                or not math.isfinite(grace_period) or grace_period <= 0):
+            raise ValueError("grace_period must be finite and positive")
         self.mode = mode
+        self.grace_period = grace_period
+        self.grace_deadline = None  # set once a valid FIN has been accepted
         self.timeout = timeout
         self.max_retries = max_retries
         # Reliable-transfer state (stop-and-wait): next expected seq per
@@ -278,6 +287,8 @@ class Host:
             return False
         self._send_ack(packet)
         self.completed.add(key)
+        # The grace period starts only now, after the FIN ACK has been sent.
+        self.grace_deadline = time.monotonic() + self.grace_period
         self._log_seq("complete", packet)
         return True
 
@@ -360,7 +371,16 @@ class Host:
                     pending[request.id] = (request, time.monotonic() + timeout)
 
     def run(self):
+        """Serve packets until the socket closes or, for a reliable receiver, until
+        the grace period that follows an accepted FIN has expired.
+
+        During the grace period duplicate DATA/FIN packets are still re-ACKed.
+        The loop returns without closing the socket; the owner closes the host.
+        """
         while True:
+            if self.grace_deadline is not None and time.monotonic() >= self.grace_deadline:
+                event(self.run_id, self.id, "grace_expired")
+                return
             try:
                 packet = self.receive()
             except socket.timeout:
