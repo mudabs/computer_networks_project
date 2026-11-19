@@ -12,6 +12,7 @@ Run from the repository root with:
 
 import copy
 import logging
+import math
 import queue
 import threading
 import time
@@ -20,6 +21,7 @@ from tkinter import messagebox, ttk
 
 from config import Config
 from host import Host
+from packet import Packet, PacketError
 from router import Router
 
 
@@ -61,6 +63,44 @@ def parse_event(message):
     return fields
 
 
+MAX_TRANSFER_MESSAGES = 100
+
+
+def parse_transfer_settings(source, destination, message, count_text,
+                            timeout_text, retries_text):
+    """Validate the reliable-transfer inputs; raise ValueError with a GUI-ready message."""
+    if source == destination:
+        raise ValueError("Source and destination must be different hosts.")
+    if not message:
+        raise ValueError("Enter a message to send.")
+    try:
+        count = int(str(count_text).strip())
+    except ValueError:
+        raise ValueError("Message count must be a whole number.") from None
+    if not 1 <= count <= MAX_TRANSFER_MESSAGES:
+        raise ValueError(
+            f"Message count must be between 1 and {MAX_TRANSFER_MESSAGES}."
+        )
+    try:
+        timeout = float(str(timeout_text).strip())
+    except ValueError:
+        raise ValueError("Timeout must be a positive number.") from None
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("Timeout must be a positive number.")
+    try:
+        max_retries = int(str(retries_text).strip())
+    except ValueError:
+        raise ValueError("Max retries must be a whole number.") from None
+    if max_retries < 0:
+        raise ValueError("Max retries must be zero or more.")
+    try:
+        Packet(source, destination, 8, "DATA", 0, 0, message).to_bytes()
+    except PacketError as exc:
+        raise ValueError(f"Message cannot be sent: {exc}") from None
+    return {"messages": [message] * count, "timeout": timeout,
+            "max_retries": max_retries}
+
+
 class NetworkController:
     """Run the real network devices in background threads for the GUI."""
 
@@ -72,6 +112,12 @@ class NetworkController:
         self.destination = None
         self.run_id = None
         self.running = False
+        self.mode = "best_effort"
+        self.network_data = None
+        self.route_data = None
+        self.transfer_thread = None
+        self._transfer_token = 0
+        self._transfer_events = queue.Queue()
 
     @staticmethod
     def _run_device(device):
@@ -85,11 +131,26 @@ class NetworkController:
                 "GUI device thread failed for %s", device.id
             )
 
-    def start(self, network_data, route_data, source, destination):
+    def start(self, network_data, route_data, source, destination,
+              mode="best_effort", timeout=None, max_retries=None):
         if source == destination:
             raise ValueError("Source and destination hosts must be different")
+        if mode not in ("best_effort", "reliable"):
+            raise ValueError(f"Unknown mode {mode!r}")
+
+        # Only pass what was asked for so best-effort Hosts keep their defaults.
+        host_options = {}
+        if mode != "best_effort":
+            host_options["mode"] = mode
+        if timeout is not None:
+            host_options["timeout"] = timeout
+        if max_retries is not None:
+            host_options["max_retries"] = max_retries
 
         self.stop()
+        self.mode = mode
+        self.network_data = network_data
+        self.route_data = route_data
         self.config = Config(network_data=network_data, route_data=route_data)
         self.source = source
         self.destination = destination
@@ -108,7 +169,7 @@ class NetworkController:
         for device_id, entry in self.config.data["devices"].items():
             if entry["type"] == "host":
                 self.devices[device_id] = Host(
-                    device_id, self.config, run_id=self.run_id
+                    device_id, self.config, run_id=self.run_id, **host_options
                 )
 
         for device_id, device in self.devices.items():
@@ -132,7 +193,47 @@ class NetworkController:
         destination_thread.start()
         self.running = True
 
+    def begin_transfer(self, messages):
+        """Start a reliable transfer from the source in a background worker."""
+        if not self.running or self.mode != "reliable":
+            raise RuntimeError("The network is not running in reliable mode")
+        if self.transfer_thread is not None and self.transfer_thread.is_alive():
+            raise RuntimeError("A transfer is already running")
+        token = self._transfer_token
+        self.transfer_thread = threading.Thread(
+            target=self._transfer_worker,
+            args=(token, self.devices[self.source], list(messages), self.destination),
+            name=f"transfer-{self.source}",
+            daemon=True,
+        )
+        self.threads.append(self.transfer_thread)
+        self.transfer_thread.start()
+
+    def _transfer_worker(self, token, host, messages, destination):
+        try:
+            outcome = host.start_transfer(messages, destination)
+        except Exception as exc:
+            if token != self._transfer_token:
+                return  # sockets were closed by stop(); expected, not an error
+            outcome = {"status": "ERROR", "error": exc}
+        if token == self._transfer_token:
+            self._transfer_events.put((token, outcome))
+
+    def poll_transfer(self):
+        """Return the finished transfer's result dict, or None. Main-thread safe."""
+        while True:
+            try:
+                token, outcome = self._transfer_events.get_nowait()
+            except queue.Empty:
+                return None
+            if token == self._transfer_token:
+                return outcome
+
     def probe(self, payload, timeout):
+        if self.running and self.mode != "best_effort":
+            # Restore an ordinary best-effort network before using Host.probe.
+            self.start(self.network_data, self.route_data,
+                       self.source, self.destination)
         if not self.running:
             raise RuntimeError("The network is not running")
         source_host = self.devices[self.source]
@@ -145,6 +246,7 @@ class NetworkController:
 
     def stop(self):
         self.running = False
+        self._transfer_token += 1  # any in-flight transfer is now stale
         devices = list(self.devices.values())
         self.devices = {}
         for device in devices:
@@ -155,6 +257,12 @@ class NetworkController:
         for thread in self.threads:
             thread.join(timeout=1.0)
         self.threads = []
+        self.transfer_thread = None
+        while True:  # discard anything a stopped transfer left behind
+            try:
+                self._transfer_events.get_nowait()
+            except queue.Empty:
+                break
 
 
 class NetworkGUI(tk.Tk):
@@ -184,6 +292,8 @@ class NetworkGUI(tk.Tk):
         self.destination_var = tk.StringVar(value="H2")
         self.message_var = tk.StringVar(value="Hello from the GUI")
         self.timeout_var = tk.StringVar(value="3.0")
+        self.count_var = tk.StringVar(value="3")
+        self.retries_var = tk.StringVar(value="3")
         self.observe_late_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Starting network…")
         self.result_var = tk.StringVar(value="No probe sent yet")
@@ -192,6 +302,7 @@ class NetworkGUI(tk.Tk):
         self.packet_count_var = tk.StringVar(value="0 sent")
         self.drop_count_var = tk.StringVar(value="0 dropped")
         self.probe_in_flight = False
+        self.transfer_in_flight = False
         self.observe_late = False
         self.active_source = None
         self.active_destination = None
@@ -336,6 +447,24 @@ class NetworkGUI(tk.Tk):
         )
         self.send_button.pack(fill="x", pady=(0, 14))
 
+        ttk.Label(self.sidebar, text="RELIABLE TRANSFER", style="Section.TLabel").pack(
+            anchor="w", pady=(0, 8)
+        )
+        self._field_label("Message count")
+        ttk.Entry(self.sidebar, textvariable=self.count_var).pack(fill="x", pady=(0, 9))
+        self._field_label("Max retries")
+        ttk.Entry(self.sidebar, textvariable=self.retries_var).pack(fill="x", pady=(0, 9))
+        self.transfer_button = ttk.Button(
+            self.sidebar, text="Start reliable transfer", style="Accent.TButton",
+            command=self._start_transfer
+        )
+        self.transfer_button.pack(fill="x", pady=(0, 4))
+        self.stop_button = ttk.Button(
+            self.sidebar, text="Stop transfer", command=self._stop_transfer,
+            state="disabled"
+        )
+        self.stop_button.pack(fill="x", pady=(0, 14))
+
         result_card = tk.Frame(self.sidebar, bg=PANEL_2, padx=12, pady=10)
         result_card.pack(fill="x", pady=(0, 16))
         tk.Label(result_card, text="LAST RESULT", bg=PANEL_2, fg=MUTED,
@@ -406,6 +535,7 @@ class NetworkGUI(tk.Tk):
         lower.columnconfigure(0, weight=1)
         lower.rowconfigure(0, weight=1)
         notebook = ttk.Notebook(lower)
+        self.notebook = notebook
         notebook.grid(row=0, column=0, sticky="ew")
         self._build_routes_tab(notebook)
         self._build_conditions_tab(notebook)
@@ -556,6 +686,10 @@ class NetworkGUI(tk.Tk):
         self.status_var.set("Endpoint change ready — network restarts on send")
 
     def _restart_network(self, show_errors=True):
+        if self.transfer_in_flight:
+            if show_errors:
+                messagebox.showinfo("Transfer in progress", "Stop the transfer first.")
+            return False
         if self.probe_in_flight:
             if show_errors:
                 messagebox.showinfo("Probe in progress", "Wait for the current probe to finish.")
@@ -585,8 +719,101 @@ class NetworkGUI(tk.Tk):
                 messagebox.showerror("Could not start network", str(exc))
             return False
 
+    def _start_transfer(self):
+        if self.probe_in_flight or self.transfer_in_flight:
+            return
+        source, destination = self.source_var.get(), self.destination_var.get()
+        try:
+            settings = parse_transfer_settings(
+                source, destination, self.message_var.get(), self.count_var.get(),
+                self.timeout_var.get(), self.retries_var.get(),
+            )
+        except ValueError as exc:
+            messagebox.showerror("Invalid transfer settings", str(exc))
+            return
+        try:
+            self.status_var.set("Starting reliable transfer…")
+            self.update_idletasks()
+            self.controller.start(
+                self.network_data, self.route_data, source, destination,
+                mode="reliable", timeout=settings["timeout"],
+                max_retries=settings["max_retries"],
+            )
+            self.active_source, self.active_destination = source, destination
+            self.run_var.set(f"Run: {self.controller.run_id}")
+            self._draw_topology()
+            self.controller.begin_transfer(settings["messages"])
+        except Exception as exc:
+            self.controller.stop()
+            self.active_source = self.active_destination = None
+            self.status_var.set("Transfer failed to start")
+            self.status_badge.configure(bg="#4a1d2a", fg=BAD)
+            logging.getLogger(__name__).error("GUI could not start transfer: %s", exc)
+            messagebox.showerror("Could not start transfer", str(exc))
+            return
+        self.transfer_in_flight = True
+        self._set_transfer_controls(running=True)
+        self.result_var.set(f"Transferring {len(settings['messages'])} message(s)…")
+        self.status_var.set("Reliable transfer running")
+        self.status_badge.configure(bg="#173c3a", fg=GOOD)
+
+    def _stop_transfer(self):
+        if not self.transfer_in_flight:
+            return
+        self.controller.stop()
+        # Force the next probe/send to start a fresh best-effort network.
+        self.active_source = self.active_destination = None
+        self.transfer_in_flight = False
+        self._set_transfer_controls(running=False)
+        self.result_var.set("Transfer stopped")
+        self.status_var.set("Transfer stopped — network restarts on send")
+        self.status_badge.configure(bg="#49391a", fg=WARN)
+
+    def _poll_transfer(self):
+        """Runs on the Tk thread; the worker only posts to a queue."""
+        if not self.transfer_in_flight:
+            return
+        outcome = self.controller.poll_transfer()
+        if outcome is None:
+            return
+        self.transfer_in_flight = False
+        self.active_source = self.active_destination = None
+        self._set_transfer_controls(running=False)
+        status = outcome["status"]
+        if status == "COMPLETE":
+            self.result_var.set(f"Transfer COMPLETE: {outcome['sent']}/{outcome['count']} acknowledged")
+            self.status_var.set("Transfer complete")
+            self.status_badge.configure(bg="#173c3a", fg=GOOD)
+        elif status == "FAILED":
+            self.result_var.set(f"Transfer FAILED: {outcome['sent']}/{outcome['count']} acknowledged")
+            self.status_var.set("Transfer failed")
+            self.status_badge.configure(bg="#4a1d2a", fg=BAD)
+        else:
+            self.result_var.set(f"ERROR: {outcome.get('error')}")
+            self.status_var.set("Transfer failed")
+            self.status_badge.configure(bg="#4a1d2a", fg=BAD)
+
+    def _transfer_lockable_widgets(self):
+        kinds = (ttk.Button, ttk.Entry, ttk.Combobox, ttk.Checkbutton)
+        roots = [self.sidebar]
+        for tab_id in self.notebook.tabs():
+            if self.notebook.tab(tab_id, "text") in ("Routes", "Conditions"):
+                roots.append(self.notebook.nametowidget(tab_id))
+        pending, found = list(roots), []
+        while pending:
+            widget = pending.pop()
+            pending.extend(widget.winfo_children())
+            if isinstance(widget, kinds) and widget is not self.stop_button:
+                found.append(widget)
+        return found
+
+    def _set_transfer_controls(self, running):
+        for widget in self._transfer_lockable_widgets():
+            widget.state(["disabled"] if running else ["!disabled"])
+        self.stop_button.state(["!disabled"] if running else ["disabled"])
+
     def _send_probe(self):
-        if self.probe_in_flight:
+        if self.probe_in_flight or self.transfer_in_flight:
             return
         message = self.message_var.get()
         if not message:
@@ -926,6 +1153,7 @@ class NetworkGUI(tk.Tk):
         )
 
     def _drain_records(self):
+        self._poll_transfer()
         try:
             while True:
                 record = self.records.get_nowait()
@@ -1018,8 +1246,8 @@ class NetworkGUI(tk.Tk):
         self.log_lines = 0
 
     def _on_close(self):
-        if self.probe_in_flight:
-            if not messagebox.askyesno("Probe in progress", "Stop the demo and close the GUI?"):
+        if self.probe_in_flight or self.transfer_in_flight:
+            if not messagebox.askyesno("Operation in progress", "Stop the demo and close the GUI?"):
                 return
         self.controller.stop()
         logging.getLogger().removeHandler(self.log_handler)
