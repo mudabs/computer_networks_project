@@ -1,13 +1,10 @@
 # Mini Internet: Track B Reliable Transfer
 
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Python 3.11](https://img.shields.io/badge/python-3.11-blue) ![Track B: Reliable Transfer](https://img.shields.io/badge/Track%20B-Reliable%20Transfer-blue) ![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen)
+
 A small Python network simulator where hosts and routers exchange real UDP packets on your computer, with a GUI for watching reliable (stop-and-wait) transfer recover from lost packets.
 
 CSCI 5500 Computer Networks, Fall 2026 - Group 13.
-
-![Track B: Reliable Transfer](https://img.shields.io/badge/Track%20B-Reliable%20Transfer-blue)
-![Python 3](https://img.shields.io/badge/python-3.x-blue)
-![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen)
-![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
 ![The Mini Internet GUI after a Dropped ACK scenario: topology, counters, and controls](docs/images/gui.png)
 
