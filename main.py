@@ -57,6 +57,11 @@ def parse_args(config):
         "--transfer", metavar="DEST", help="Send --messages reliably to DEST (stop-and-wait)"
     )
     parser.add_argument("--messages", nargs="+", help="Messages for --transfer")
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help=argparse.SUPPRESS,  # internal: set by --all so children never prompt
+    )
     args = parser.parse_args()
     if args.probe and args.transfer:
         parser.error("use either --probe or --transfer, not both")
@@ -90,7 +95,7 @@ def configure_logging(level):
 
 def run_device(device_id, config, run_id, probe=None, message=None,
                timeout=PROBE_TIMEOUT, mode="best_effort", transfer=None,
-               messages=None):
+               messages=None, headless=False):
     device_type = config.get_device(device_id)["type"]
     if device_type == "host":
         device = Host(device_id, config, run_id=run_id, timeout=timeout, mode=mode)
@@ -109,7 +114,7 @@ def run_device(device_id, config, run_id, probe=None, message=None,
             result = device.start_transfer(messages, transfer)
             print(f"TRANSFER {result['status']}")
             return 0 if result["status"] == "COMPLETE" else 1
-        if device_type == "host" and sys.stdin.isatty():
+        if device_type == "host" and sys.stdin.isatty() and not headless:
             peers = [name for name, entry in config.data["devices"].items()
                      if entry["type"] == "host" and name != device_id]
             if len(peers) != 1:
@@ -141,6 +146,7 @@ def run_all(device_ids, run_id, log_level, mode="best_effort", timeout=PROBE_TIM
                     mode,
                     "--timeout",
                     str(timeout),
+                    "--headless",
                 ],
                 stdin=subprocess.DEVNULL,
             )
@@ -191,7 +197,7 @@ def main():
         return run_device(args.device, config, args.run_id, args.probe,
                           message=args.message, timeout=args.timeout,
                           mode=args.mode, transfer=args.transfer,
-                          messages=args.messages)
+                          messages=args.messages, headless=args.headless)
     except (KeyboardInterrupt, EOFError):
         logging.info("Shutdown requested")
     except (OSError, KeyError, ValueError) as exc:
