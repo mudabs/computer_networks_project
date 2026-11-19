@@ -2,7 +2,7 @@
 
 A small network simulator in Python: hosts and routers exchange real UDP packets on your own computer, and you can watch them travel, get lost, and be re-sent.
 
-CSCI 5500 Computer Networks, Fall 2026 - Group 1.
+CSCI 5500 Computer Networks, Fall 2026 - Group 13.
 
 ![The Mini Internet GUI after a Dropped ACK scenario: topology, counters, and controls](docs/images/gui.png)
 
