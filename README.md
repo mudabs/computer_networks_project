@@ -1,8 +1,13 @@
-# Mini Internet
+# Mini Internet — Track B: Reliable Transfer
 
-A small network simulator in Python: hosts and routers exchange real UDP packets on your own computer, and you can watch them travel, get lost, and be re-sent.
+A small Python network simulator where hosts and routers exchange real UDP packets on your computer, with a GUI for watching reliable (stop-and-wait) transfer recover from lost packets.
 
 CSCI 5500 Computer Networks, Fall 2026 - Group 13.
+
+![Track B: Reliable Transfer](https://img.shields.io/badge/Track%20B-Reliable%20Transfer-blue)
+![Python 3](https://img.shields.io/badge/python-3.x-blue)
+![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
 ![The Mini Internet GUI after a Dropped ACK scenario: topology, counters, and controls](docs/images/gui.png)
 
@@ -12,27 +17,48 @@ CSCI 5500 Computer Networks, Fall 2026 - Group 13.
 python gui.py
 ```
 
-On macOS or Linux, use `python3 gui.py` if `python` is not found. Python 3 is all you need: there are no third-party packages. Run it from the repository root.
+Use `python3 gui.py` if `python` is not found. Run it from the repository root. Only Python 3 is needed (Tkinter comes with it on Windows and macOS; some Linux systems need `python3-tk`).
 
-## Using the GUI
+> **Warning:** do not run `main.py --all` at the same time as the GUI. Both use the same UDP ports.
 
-1. **Pick the endpoints.** Choose a **Source host** and a **Destination host** (they must differ). The blue line on the map is the route.
-2. **Send one packet (best effort).** Type a **Message** and click **Send packet**. The result appears under **LAST RESULT** as MATCHED, TIMEOUT, or LATE. Nothing is re-sent if a packet is lost.
-3. **Send reliably.** Under **RELIABLE TRANSFER**, set **Message count**, **Timeout (seconds)** (the field above), and **Max retries**, then click **Start reliable transfer**. Lost packets are re-sent until they are acknowledged. **Stop transfer** cancels it.
-4. **Try a scenario.** Under **RELIABLE SCENARIOS**, click **Normal**, **Dropped DATA**, **Dropped ACK**, or **Unreachable** to run a ready-made reliable transfer and watch retries and duplicates.
-5. **Look around.** The tabs below the map are **Routes** (change next hops), **Link conditions** (add loss and delay), and **Event log** (every packet event).
-6. **Start over.** **Restart network** applies your changes. **Reset all settings** returns to the original configuration. Nothing is saved to the JSON files.
+## Use the GUI
 
-## Troubleshooting
+1. Choose a **Source host** and a **Destination host** (they must differ).
+2. Click **Send packet** for best-effort delivery: one message, sent once, with no recovery.
+3. Click **Start reliable transfer** for Track B: the messages are sent with acknowledgements and retransmission.
+4. Set **Message count**, **Timeout (seconds)**, and **Max retries** first.
+5. Try the scenarios **Normal**, **Dropped DATA**, **Dropped ACK**, and **Unreachable**.
+6. Watch the topology and animations, the counters (Delivered, Retries, Duplicates, Failures), and the **Event log** tab.
 
-- **Do not run the GUI at the same time as `main.py --all`.** Both use the same UDP ports, so the second one will fail to start.
-- **"Could not start network" or a port error:** close any other copy of the GUI or any `main.py` device, then click **Restart network**.
-- **`No module named tkinter`:** Tkinter ships with Python on Windows and macOS. On some Linux systems install `python3-tk`.
-- **Some buttons are out of view:** the left panel scrolls. Use the mouse wheel or the scroll bar.
+Something not working? See the [GUI manual](info/GUI.md) for every control and a troubleshooting table.
+
+## Track B: Reliable Transfer
+
+This project chose **reliable transfer** (not routing or congestion control). It sends a finite, numbered sequence of messages over lossy UDP links, and implements:
+
+- stop-and-wait: one unacknowledged message at a time;
+- ACKs, sequence numbers, run IDs, a timeout, and retransmission;
+- ordered, duplicate-free delivery at the receiver;
+- re-ACKing duplicates, so a lost ACK does not stall the sender;
+- bounded retries: the transfer fails cleanly when they run out;
+- best-effort mode as the comparison baseline.
+
+**Evidence**
+
+| Required evidence | Where to see it |
+|---|---|
+| Loss-free ordered delivery | `test_messages_are_delivered_exactly_once_and_in_order` in [tests/test_reliable_ordered_delivery.py](tests/test_reliable_ordered_delivery.py); GUI scenario **Normal** |
+| Dropped-data recovery | `test_dropped_data_packet_is_retransmitted_and_delivered_once` in the same file; GUI scenario **Dropped DATA** |
+| Dropped-ACK recovery | `test_dropped_final_ack_is_reacked_for_duplicate_data` in the same file; GUI scenario **Dropped ACK** |
+| Unreachable-destination failure | `test_unreachable_destination_fails_after_bounded_retries` in the same file; GUI scenario **Unreachable** |
+| Protocol rules (ACK matching, sequence handling, timeout and retry) | [tests/test_protocol.py](tests/test_protocol.py) |
+| Best-effort vs reliable at 0% and 5% loss, three seeds | [results/evaluation_report.md](results/evaluation_report.md) |
+
+Run all the tests with `python -m unittest discover -s tests`.
 
 ## More details
 
-- [GUI manual](info/GUI.md): every control, scenario, counter, and message
-- [Command-line use](info/CLI.md): `main.py`, probes, link conditions, logs, tests
+- [GUI manual](info/GUI.md): controls, scenarios, counters, animations, troubleshooting
+- [Command-line use](info/CLI.md): `main.py`, probes, link conditions, logs
 - [Host](info/HOST.md), [Packet](info/PACKET.md), and [Routers](info/ROUTERS.md) design notes
-- [Evaluation report](results/evaluation_report.md): best-effort vs reliable results
+- [Evaluation report](results/evaluation_report.md): results and interpretation
