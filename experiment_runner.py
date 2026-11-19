@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 import link
@@ -208,13 +208,15 @@ class IsolatedNetwork:
         self.config, self.run_id, self.settings = config, run_id, settings
         self.devices, self.threads, self.thread_errors = [], [], []
         self.source = None
+        self.closing = False
         self.threads_alive = 0
 
     def _serve(self, device):
         try:
             device.run()
-        except OSError:
-            pass  # the socket was closed during shutdown
+        except OSError as exc:
+            if not self.closing:  # closed sockets during shutdown are expected
+                self.thread_errors.append(f"{device.id}: {exc!r}")
         except Exception as exc:  # recorded, never raised into the batch
             self.thread_errors.append(f"{device.id}: {exc!r}")
 
@@ -242,6 +244,7 @@ class IsolatedNetwork:
         return self
 
     def close(self):
+        self.closing = True
         for device in self.devices:
             try:
                 device.close()
@@ -315,6 +318,15 @@ def run_once(settings, repeat, base_config=None):
                 outcome = run_workload(network.source, settings, messages)
         except Exception as exc:
             runner_error = f"{type(exc).__name__}: {exc}"
+    if network is not None:  # unexpected device-thread trouble is a runner error
+        problems = []
+        if network.thread_errors:
+            problems.append("device thread errors: " + "; ".join(network.thread_errors))
+        if network.threads_alive:
+            problems.append(f"{network.threads_alive} device thread(s) still alive "
+                            "after cleanup")
+        if problems:
+            runner_error = "; ".join(filter(None, [runner_error, *problems]))
     record.update({
         "outcome": outcome,
         "events": events,

@@ -249,6 +249,71 @@ class FailureAndCleanupTests(unittest.TestCase):
                 self.assertEqual(record["cleanup"]["threads_alive"], 0)
                 self.assertEqual(record["cleanup"]["thread_errors"], [])
 
+    def fast_argv(self):
+        return ["--mode", "reliable", "--messages", "1", "--timeout", "0.1",
+                "--max-retries", "0", "--output", self.output]
+
+    def test_device_thread_failure_is_a_runner_error_with_diagnostics_kept(self):
+        with patch.object(runner.Router, "run", side_effect=RuntimeError("device crashed")):
+            status = quiet_main(self.fast_argv())
+        self.assertEqual(status, 1)
+        (record,) = load(self.output)
+        self.assertIn("device crashed", record["runner_error"])
+        self.assertTrue(any("device crashed" in e for e in record["cleanup"]["thread_errors"]))
+        self.assertEqual(record["cleanup"]["threads_alive"], 0)
+        self.assertEqual(record["outcome"]["result"]["status"], "FAILED")  # outcome kept
+        self.assertTrue(record["events"])
+
+    def test_device_thread_still_alive_after_cleanup_is_a_runner_error(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def stuck(router):  # ignores the socket being closed
+            release.wait(10)
+
+        with patch.object(runner.Router, "run", stuck), \
+                patch.object(runner, "JOIN_TIMEOUT", 0.05):
+            status = quiet_main(self.fast_argv())
+        release.set()
+        for thread in threading.enumerate():  # let the parked threads exit
+            if thread.daemon and thread is not threading.current_thread():
+                thread.join(2)
+        self.assertEqual(status, 1)
+        (record,) = load(self.output)
+        self.assertGreater(record["cleanup"]["threads_alive"], 0)
+        self.assertIn("still alive", record["runner_error"])
+        self.assertIsNotNone(record["outcome"])  # raw outcome preserved
+
+    def test_thread_problems_are_appended_to_an_existing_runner_error(self):
+        with patch.object(runner.Router, "run", side_effect=RuntimeError("device crashed")), \
+                patch.object(runner, "run_workload", side_effect=RuntimeError("workload broke")):
+            (record,) = runner.run_experiment(make_settings(self.directory.name))
+        self.assertIn("workload broke", record["runner_error"])
+        self.assertIn("device crashed", record["runner_error"])
+        self.assertIsNone(record["outcome"])
+
+    def test_closed_socket_errors_are_expected_only_during_shutdown(self):
+        class Device:
+            id = "A"
+
+            def run(self):
+                raise OSError("socket closed")
+
+        network = runner.IsolatedNetwork(Config(), "run", runner.ExperimentSettings())
+        network.closing = True
+        network._serve(Device())
+        self.assertEqual(network.thread_errors, [])  # normal shutdown
+        network.closing = False
+        network._serve(Device())
+        self.assertEqual(len(network.thread_errors), 1)  # an OSError mid-run is not
+
+    def test_a_clean_run_reports_no_runner_error(self):
+        self.assertEqual(quiet_main(["--messages", "2", "--timeout", "0.3",
+                                     "--output", self.output]), 0)
+        (record,) = load(self.output)
+        self.assertEqual((record["runner_error"], record["cleanup"]["thread_errors"],
+                          record["cleanup"]["threads_alive"]), (None, [], 0))
+
     def test_handler_is_removed_even_when_the_run_raises(self):
         handlers = list(link.logger.handlers)
         with patch("experiment_runner.Router", side_effect=RuntimeError("boom")):
