@@ -174,6 +174,13 @@ class InputValidationTests(unittest.TestCase):
             {"messages": ["hi"] * 3, "timeout": 0.5, "max_retries": 2},
         )
 
+    def test_count_limit_is_gui_safe_and_inclusive(self):
+        self.assertEqual(MAX_TRANSFER_MESSAGES, 100)
+        self.assertEqual(
+            len(self.parse(count=str(MAX_TRANSFER_MESSAGES))["messages"]),
+            MAX_TRANSFER_MESSAGES,
+        )
+
     def test_zero_retries_is_allowed(self):
         self.assertEqual(self.parse(retries="0")["max_retries"], 0)
 

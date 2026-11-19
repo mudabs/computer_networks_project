@@ -63,7 +63,7 @@ def parse_event(message):
     return fields
 
 
-MAX_TRANSFER_MESSAGES = 10000
+MAX_TRANSFER_MESSAGES = 100
 
 
 def parse_transfer_settings(source, destination, message, count_text,
