@@ -16,7 +16,7 @@ import math
 import queue
 import threading
 import time
-from collections import OrderedDict, deque
+from collections import deque
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -290,10 +290,11 @@ class PacketAnimator:
     network.  Packets on one link animate strictly one after another, links
     animate independently, and everything is driven by ``after`` callbacks.
 
-    Styling: DATA, ACK and other packets have their own colors; a packet whose
-    ``retransmit`` event preceded its ``send`` event is drawn as a
-    retransmission (not as an extra packet); an ACK sent because of a
-    ``duplicate`` event gets a double ring; every packet carries its seq label.
+    Styling: DATA, ACK and other packets have their own colors; a ``send``
+    event flagged ``retransmit=true`` is drawn as a retransmission and one
+    flagged ``duplicate=true`` (a re-ACK of duplicate DATA/FIN) gets a double
+    ring; every packet carries its seq label.  The flags come from the send
+    event itself, so link delays cannot attach them to the wrong packet.
     """
 
     STEP_MS = 30
@@ -302,7 +303,6 @@ class PacketAnimator:
     DROP_STEPS = 10
     MAX_PER_LINK = 40
     MAX_TOTAL = 200
-    MAX_PENDING = 64   # unmatched retransmit/duplicate markers kept
 
     def __init__(self, canvas, after, positions):
         self.canvas, self.after, self.positions = canvas, after, positions
@@ -310,47 +310,17 @@ class PacketAnimator:
         self.active = set()   # links with a job currently on screen
         self.total = 0        # jobs waiting across all queues
         self.discarded = 0    # old visual entries dropped by the bounds
-        self.pending_retransmits = OrderedDict()  # key -> True until its send/drop
-        self.pending_duplicates = OrderedDict()   # same, for duplicate-ACK sends
         self.closed = False
-
-    @staticmethod
-    def _key(fields, packet_type):
-        return (fields.get("device"), fields.get("next_hop"),
-                fields.get("msg_id"), packet_type, fields.get("seq"))
-
-    def _mark(self, pending, key):
-        pending[key] = True
-        while len(pending) > self.MAX_PENDING:
-            pending.popitem(last=False)
 
     def handle(self, event_fields):
         """Queue the visual for a send/delay/drop event.
 
-        ``retransmit`` and ``duplicate`` only mark the next matching send.
         Returns True when the event was drawn on a link, False otherwise (the
         caller may then fall back to flashing the device).
         """
         name = event_fields.get("event")
-        if self.closed:
+        if self.closed or name not in ("send", "delay", "drop"):
             return False
-        if name == "retransmit":
-            self._mark(self.pending_retransmits,
-                       self._key(event_fields, event_fields.get("type")))
-            return False
-        if name == "duplicate":  # the receiver re-ACKs this DATA/FIN next
-            self._mark(self.pending_duplicates, self._key(event_fields, "ACK"))
-            return False
-        if name not in ("send", "delay", "drop"):
-            return False
-        key = self._key(event_fields, event_fields.get("type"))
-        retransmit = duplicate = False
-        if name == "send":
-            retransmit = self.pending_retransmits.pop(key, None) is not None
-            duplicate = self.pending_duplicates.pop(key, None) is not None
-        elif name == "drop":  # a dropped retransmission leaves no stale marker
-            self.pending_retransmits.pop(key, None)
-            self.pending_duplicates.pop(key, None)
         link = (event_fields.get("device"), event_fields.get("next_hop"))
         known = self.positions()
         if link[0] not in known or link[1] not in known:
@@ -359,7 +329,8 @@ class PacketAnimator:
             seq = event_fields.get("seq")
             job = _Job("send", event_fields.get("type"),
                        seq=seq if seq and seq.isdigit() else None,
-                       retransmit=retransmit, duplicate=duplicate)
+                       retransmit=event_fields.get("retransmit") == "true",
+                       duplicate=event_fields.get("duplicate") == "true")
         elif name == "delay":
             try:
                 delay_ms = float(event_fields.get("delay_ms", 0))
@@ -376,8 +347,6 @@ class PacketAnimator:
         self.closed = True
         self.queues.clear()
         self.active.clear()
-        self.pending_retransmits.clear()
-        self.pending_duplicates.clear()
         self.total = 0
 
     def _enqueue(self, link, job):
@@ -1385,7 +1354,7 @@ class NetworkGUI(tk.Tk):
                 if event_name == "send":
                     self.packet_count_var.set(f"{self._increment_stat(self.packet_count_var.get())} sent")
                     self.animator.handle(fields)
-                elif event_name in ("delay", "retransmit", "duplicate"):
+                elif event_name == "delay":
                     self.animator.handle(fields)
                 elif event_name == "drop":
                     self.drop_count_var.set(f"{self._increment_stat(self.drop_count_var.get())} dropped")

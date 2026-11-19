@@ -133,14 +133,14 @@ class LossFreeOrderedDeliveryTests(unittest.TestCase):
         dropped = []
         link_send = sender.sender.send
 
-        def lossy_send(data, next_hop):
+        def lossy_send(data, next_hop, **marks):
             packet = Packet.from_bytes(data)
             if packet.type == "DATA":
                 transmissions.append((packet.seq, data))
                 if packet.seq == 1 and not dropped:
                     dropped.append(data)  # deliberate one-time drop
                     return
-            link_send(data, next_hop)
+            link_send(data, next_hop, **marks)
 
         sender.sender.send = lossy_send
 
@@ -173,11 +173,11 @@ class LossFreeOrderedDeliveryTests(unittest.TestCase):
         transmissions = []  # (seq, serialized bytes) of every DATA H1 sends
         sender_send = sender.sender.send
 
-        def recording_send(data, next_hop):
+        def recording_send(data, next_hop, **marks):
             packet = Packet.from_bytes(data)
             if packet.type == "DATA":
                 transmissions.append((packet.seq, data))
-            sender_send(data, next_hop)
+            sender_send(data, next_hop, **marks)
 
         sender.sender.send = recording_send
 
@@ -185,14 +185,14 @@ class LossFreeOrderedDeliveryTests(unittest.TestCase):
         dropped = []
         receiver_send = receiver.sender.send
 
-        def lossy_ack_send(data, next_hop):
+        def lossy_ack_send(data, next_hop, **marks):
             packet = Packet.from_bytes(data)
             if packet.type == "ACK" and packet.seq == last:
                 final_acks.append(data)
                 if not dropped:
                     dropped.append(data)  # deliberate one-time drop
                     return
-            receiver_send(data, next_hop)
+            receiver_send(data, next_hop, **marks)
 
         receiver.sender.send = lossy_ack_send
 
@@ -233,11 +233,11 @@ class LossFreeOrderedDeliveryTests(unittest.TestCase):
         transmissions = []  # (type, seq, serialized bytes) of every DATA/FIN
         link_send = sender.sender.send
 
-        def recording_send(data, next_hop):
+        def recording_send(data, next_hop, **marks):
             packet = Packet.from_bytes(data)
             if packet.type in ("DATA", "FIN"):
                 transmissions.append((packet.type, packet.seq, data))
-            link_send(data, next_hop)
+            link_send(data, next_hop, **marks)
 
         sender.sender.send = recording_send
 
