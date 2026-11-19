@@ -14,9 +14,9 @@ class InteractiveHostTests(unittest.TestCase):
         self.addCleanup(host.close)
         terminal = io.StringIO('hello\n')
         host.receive = MagicMock(side_effect=[
-            Packet('H2', 'H1', 5, 'DATA', 9, 'incoming'),
-            Packet('H2', 'H1', 5, 'RESPONSE', 0, 'wrong'),
-            Packet('H2', 'H1', 5, 'RESPONSE', 0, 'hello'),
+            Packet('H2', 'H1', 5, 'DATA', 9, 0, 'incoming'),
+            Packet('H2', 'H1', 5, 'RESPONSE', 0, 0, 'wrong'),
+            Packet('H2', 'H1', 5, 'RESPONSE', 0, 0, 'hello'),
         ])
         with patch('host.sys.stdin', terminal), patch('host.select.select', side_effect=[
             ([terminal], [], []),
@@ -61,7 +61,7 @@ class InteractiveHostTests(unittest.TestCase):
         host = Host('H1', Config())
         self.addCleanup(host.close)
         terminal = io.StringIO('hello\n')
-        host.receive = MagicMock(return_value=Packet('H2', 'H1', 5, 'RESPONSE', 0, 'hello'))
+        host.receive = MagicMock(return_value=Packet('H2', 'H1', 5, 'RESPONSE', 0, 0, 'hello'))
         clock = [0.0]
         calls = [0]
 
