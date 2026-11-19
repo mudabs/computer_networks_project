@@ -1,4 +1,4 @@
-# Mini Internet — Track B: Reliable Transfer
+# Mini Internet: Track B Reliable Transfer
 
 A small Python network simulator where hosts and routers exchange real UDP packets on your computer, with a GUI for watching reliable (stop-and-wait) transfer recover from lost packets.
 
