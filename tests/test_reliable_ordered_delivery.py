@@ -156,6 +156,61 @@ class LossFreeOrderedDeliveryTests(unittest.TestCase):
         self.assertEqual(seen, list(enumerate(MESSAGES)))
         self.assertIn(("H1", result["id"]), receiver.completed)
 
+    def test_dropped_final_ack_is_reacked_for_duplicate_data(self):
+        record = self.start_network()
+        receiver, seen, delivered = record.receiver, record.seen, record.delivered
+        last = len(MESSAGES) - 1
+
+        sender = Host(
+            "H1", self.config, run_id="ordered", mode="reliable",
+            timeout=0.2, max_retries=3,
+        )
+        self.devices.append(sender)
+
+        transmissions = []  # (seq, serialized bytes) of every DATA H1 sends
+        sender_send = sender.sender.send
+
+        def recording_send(data, next_hop):
+            packet = Packet.from_bytes(data)
+            if packet.type == "DATA":
+                transmissions.append((packet.seq, data))
+            sender_send(data, next_hop)
+
+        sender.sender.send = recording_send
+
+        final_acks = []  # serialized bytes of every H2 ACK for the final DATA
+        dropped = []
+        receiver_send = receiver.sender.send
+
+        def lossy_ack_send(data, next_hop):
+            packet = Packet.from_bytes(data)
+            if packet.type == "ACK" and packet.seq == last:
+                final_acks.append(data)
+                if not dropped:
+                    dropped.append(data)  # deliberate one-time drop
+                    return
+            receiver_send(data, next_hop)
+
+        receiver.sender.send = lossy_ack_send
+
+        result = sender.start_transfer(MESSAGES, "H2")
+
+        self.assertEqual(len(dropped), 1, "the deliberate ACK drop did not occur")
+        self.assertEqual(result["status"], "COMPLETE")
+        self.assertEqual(result["sent"], len(MESSAGES))
+        self.assertEqual([seq for seq, _ in transmissions], [0, 1, 2, 2])
+        first, retransmission = (data for seq, data in transmissions if seq == last)
+        self.assertEqual(first, retransmission)  # identical serialized bytes
+        self.assertTrue(record.finished.wait(5), "receiver never completed")
+        # H2 saw the final DATA twice but delivered it only once.
+        self.assertEqual([seq for seq, _ in seen], [0, 1, 2, 2])
+        self.assertEqual(delivered, MESSAGES)
+        # First ACK copy dropped, second is the re-ACK for the duplicate DATA.
+        self.assertEqual(len(final_acks), 2)
+        self.assertEqual(final_acks[0], final_acks[1])
+        self.assertEqual(dropped[0], final_acks[0])
+        self.assertIn(("H1", result["id"]), receiver.completed)
+
 
 if __name__ == "__main__":
     unittest.main()
