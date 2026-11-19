@@ -307,6 +307,31 @@ class FailureAndCleanupTests(unittest.TestCase):
         network._serve(Device())
         self.assertEqual(len(network.thread_errors), 1)  # an OSError mid-run is not
 
+    def test_device_loop_returning_while_not_closing_is_an_error(self):
+        class Device:
+            id = "A"
+
+            def run(self):
+                return  # exits normally
+
+        network = runner.IsolatedNetwork(Config(), "run", runner.ExperimentSettings())
+        network._serve(Device())
+        self.assertEqual(len(network.thread_errors), 1)
+        self.assertIn("exited unexpectedly", network.thread_errors[0])
+        network.thread_errors.clear()
+        network.closing = True  # the normal shutdown path is unchanged
+        network._serve(Device())
+        self.assertEqual(network.thread_errors, [])
+
+    def test_unexpectedly_returning_device_loop_gives_runner_error_and_exit_1(self):
+        with patch.object(runner.Router, "run", lambda router: None):
+            status = quiet_main(self.fast_argv())
+        self.assertEqual(status, 1)
+        (record,) = load(self.output)
+        self.assertIn("device loop exited unexpectedly", record["runner_error"])
+        self.assertTrue(record["cleanup"]["thread_errors"])
+        self.assertIsNotNone(record["outcome"])  # raw outcome preserved
+
     def test_a_clean_run_reports_no_runner_error(self):
         self.assertEqual(quiet_main(["--messages", "2", "--timeout", "0.3",
                                      "--output", self.output]), 0)

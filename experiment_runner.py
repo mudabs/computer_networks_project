@@ -214,6 +214,8 @@ class IsolatedNetwork:
     def _serve(self, device):
         try:
             device.run()
+            if not self.closing:  # a serve loop only ends when we close its socket
+                self.thread_errors.append(f"{device.id}: device loop exited unexpectedly")
         except OSError as exc:
             if not self.closing:  # closed sockets during shutdown are expected
                 self.thread_errors.append(f"{device.id}: {exc!r}")
