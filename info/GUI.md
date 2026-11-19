@@ -48,7 +48,7 @@ All edits you make in the GUI (routes, conditions, scenarios) are kept **in memo
 
 ## Choosing the endpoints
 
-Use **Source host** and **Destination host**. They must be different, or you will get an **Invalid endpoints** message. Changing either one redraws the map and shows "Endpoint change ready — network restarts on send": the network restarts for the new endpoints the next time you send.
+Use **Source host** and **Destination host**. They must be different, or you will get an **Invalid endpoints** message. Changing either one redraws the map and shows "Endpoint change ready - network restarts on send": the network restarts for the new endpoints the next time you send.
 
 ## Best-effort probe: Send packet
 

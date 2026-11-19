@@ -54,8 +54,8 @@ The number of forwarding hops remaining for the packet.
 Identifies the type of message carried by the packet.
 - Type: string
 - Supported values:
-  - `DATA` — an ordinary application message.
-  - `RESPONSE` — a response to an earlier message.
+  - `DATA`: an ordinary application message.
+  - `RESPONSE`: a response to an earlier message.
 - Additional types may be added if required by the project extension.
 
 ### `id`
