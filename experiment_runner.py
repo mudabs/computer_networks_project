@@ -36,6 +36,8 @@ from router import Router
 SCHEMA_VERSION = 1
 MODES = ("best_effort", "reliable")
 JOIN_TIMEOUT = 3.0
+# Elapsed times and event timestamps use perf_counter: time.monotonic() ticks at
+# ~15.6 ms on Windows, which would quantize loopback RTTs.
 
 
 @dataclass(frozen=True)
@@ -180,7 +182,7 @@ class _CaptureHandler(logging.Handler):
     def emit(self, record):
         fields = parse_event(record.getMessage())
         if fields.get("run_id") == self.run_id:
-            self.events.append({"t": round(time.monotonic() - self.started, 6),
+            self.events.append({"t": round(time.perf_counter() - self.started, 6),
                                 "fields": fields})
 
 
@@ -189,7 +191,7 @@ def capture_events(run_id):
     """Collect this run's structured events; always restores the logger."""
     logger = link.logger
     saved = (logger.level, logger.propagate)
-    handler = _CaptureHandler(run_id, time.monotonic())
+    handler = _CaptureHandler(run_id, time.perf_counter())
     logger.setLevel(logging.INFO)
     logger.propagate = False  # keep experiment batches quiet
     logger.addHandler(handler)
@@ -264,26 +266,30 @@ class IsolatedNetwork:
 def run_workload(source, settings, messages):
     """Send the workload; a failure or timeout is a result, not an error."""
     if settings.mode == "reliable":
-        started = time.monotonic()
+        started = time.perf_counter()
         result = source.start_transfer(messages, settings.destination)
         return {"type": "reliable_transfer", "result": dict(result),
-                "elapsed_s": time.monotonic() - started}
+                "elapsed_s": time.perf_counter() - started}
     outcomes = []
     for index, message in enumerate(messages):
-        started = time.monotonic()
+        started = time.perf_counter()
         response = source.probe(settings.destination, message, timeout=settings.timeout)
         outcomes.append({
             "index": index, "message": message,
             "status": "MATCHED" if response is not None else "TIMEOUT",
-            "response": response, "elapsed_s": time.monotonic() - started,
+            "response": response, "elapsed_s": time.perf_counter() - started,
         })
     return {"type": "best_effort_probes", "messages": outcomes}
 
 
-def run_once(settings, repeat, base_config=None):
-    """One isolated run; returns its raw record (never raises for FAILED/TIMEOUT)."""
+def run_once(settings, repeat, base_config=None, run_id=None):
+    """One isolated run; returns its raw record (never raises for FAILED/TIMEOUT).
+
+    ``run_id`` (no spaces) overrides the default ``<mode>-s<seed>-r<repeat>`` so a
+    caller running many conditions can keep every record's id unique.
+    """
     run_seed = derive_run_seed(settings.seed, repeat)
-    run_id = f"{settings.mode}-s{settings.seed}-r{repeat}"
+    run_id = run_id or f"{settings.mode}-s{settings.seed}-r{repeat}"
     messages = generate_workload(settings.messages, settings.message_prefix)
     config = build_config(settings, run_seed, base_config)
     logical = logical_config(config, settings.source, settings.destination)
@@ -311,7 +317,7 @@ def run_once(settings, repeat, base_config=None):
         "workload": {"messages": messages},
         "runtime": {"ports": ports},
     }
-    started_unix, started = time.time(), time.monotonic()
+    started_unix, started = time.time(), time.perf_counter()
     outcome, runner_error, network = None, None, None
     with capture_events(run_id) as events:
         try:
@@ -332,7 +338,7 @@ def run_once(settings, repeat, base_config=None):
     record.update({
         "outcome": outcome,
         "events": events,
-        "timing": {"started_unix": started_unix, "duration_s": time.monotonic() - started},
+        "timing": {"started_unix": started_unix, "duration_s": time.perf_counter() - started},
         "cleanup": {"threads_alive": network.threads_alive if network else 0,
                     "thread_errors": list(network.thread_errors) if network else []},
         "runner_error": runner_error,

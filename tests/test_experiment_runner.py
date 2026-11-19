@@ -184,6 +184,15 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(len({json.dumps(r["config"]["routes"]) for r in records}), 1)
         self.assertEqual(len({r["run_id"] for r in records}), 3)
 
+    def test_run_id_can_be_overridden_and_is_used_for_events(self):
+        record = runner.run_once(make_settings(self.directory.name, messages=1), 0,
+                                 run_id="custom-id")
+        self.assertEqual(record["run_id"], "custom-id")
+        self.assertTrue(record["events"])
+        self.assertTrue(all(e["fields"]["run_id"] == "custom-id" for e in record["events"]))
+        default = runner.run_once(make_settings(self.directory.name, messages=1), 1)
+        self.assertEqual(default["run_id"], "reliable-s7-r1")  # default unchanged
+
     def test_output_directory_is_created(self):
         nested = Path(self.directory.name) / "a" / "b" / "raw.jsonl"
         self.assertEqual(quiet_main(["--messages", "1", "--timeout", "0.3",
