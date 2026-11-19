@@ -50,8 +50,10 @@ class Host:
         self.sender = LinkSender(self.sock, config, self.id, run_id)
         event(run_id, self.id, "start", next_hop=self.neighbor)
 
-    def _send_packet(self, packet_bytes):
-        self.sender.send(packet_bytes, self.neighbor)
+    def _send_packet(self, packet_bytes, **marks):
+        # ``marks`` (retransmit/duplicate) only annotate log events; they are
+        # passed on only when set, so ordinary sends are unchanged.
+        self.sender.send(packet_bytes, self.neighbor, **marks)
 
     def send(self, data, dst, mode=None):
         mode = self.mode if mode is None else mode
@@ -229,7 +231,7 @@ class Host:
                     return False
                 retries += 1
                 self._log_seq("retransmit", packet, retries=retries)
-                self._send_packet(data)
+                self._send_packet(data, retransmit=True)
                 deadline = time.monotonic() + self.timeout
                 continue
             ready, _, _ = select.select([self.sock], [], [], remaining)
@@ -245,9 +247,9 @@ class Host:
                 return True
             self._process(incoming)
 
-    def _send_ack(self, packet):
+    def _send_ack(self, packet, duplicate=False):
         ack = Packet(self.id, packet.src, 8, "ACK", packet.id, packet.seq, "")
-        self._send_packet(ack.to_bytes())
+        self._send_packet(ack.to_bytes(), **({"duplicate": True} if duplicate else {}))
         self._log_seq("ack_sent", ack)
 
     def _handle_data(self, packet):
@@ -255,7 +257,7 @@ class Host:
         expected = self.expected.get(key, 0)
         if packet.seq < expected:
             self._log_seq("duplicate", packet)
-            self._send_ack(packet)  # the earlier ACK may have been lost
+            self._send_ack(packet, duplicate=True)  # the earlier ACK may have been lost
             return False
         if packet.seq > expected:
             self._log_seq("drop", packet, reason="out_of_order")
@@ -269,7 +271,7 @@ class Host:
         key = (packet.src, packet.id)
         if key in self.completed:
             self._log_seq("duplicate", packet)
-            self._send_ack(packet)
+            self._send_ack(packet, duplicate=True)
             return False
         if packet.seq != self.expected.get(key, 0):
             self._log_seq("drop", packet, reason="unexpected_fin_sequence")

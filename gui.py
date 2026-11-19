@@ -38,6 +38,8 @@ GOOD = "#34d399"
 WARN = "#fbbf24"
 BAD = "#fb7185"
 GRID = "#2a3950"
+ACK = "#f472b6"          # acknowledgments
+RETRANSMIT = "#fb923c"  # retransmitted packets
 
 
 class QueueLogHandler(logging.Handler):
@@ -269,11 +271,15 @@ class NetworkController:
 class _Job:
     """One visual-only animation on a directed link."""
 
-    __slots__ = ("kind", "packet_type", "delay_ms", "item", "steps", "start", "end")
+    __slots__ = ("kind", "packet_type", "delay_ms", "seq", "retransmit",
+                 "duplicate", "parts", "steps", "start", "end")
 
-    def __init__(self, kind, packet_type=None, delay_ms=0.0):
+    def __init__(self, kind, packet_type=None, delay_ms=0.0, seq=None,
+                 retransmit=False, duplicate=False):
         self.kind, self.packet_type, self.delay_ms = kind, packet_type, delay_ms
-        self.item = self.start = self.end = None
+        self.seq, self.retransmit, self.duplicate = seq, retransmit, duplicate
+        self.parts = []  # (canvas item, radius or None for text/line, y offset)
+        self.start = self.end = None
         self.steps = 0
 
 
@@ -283,6 +289,12 @@ class PacketAnimator:
     Visual only: it reads already-parsed log events and never touches the
     network.  Packets on one link animate strictly one after another, links
     animate independently, and everything is driven by ``after`` callbacks.
+
+    Styling: DATA, ACK and other packets have their own colors; a ``send``
+    event flagged ``retransmit=true`` is drawn as a retransmission and one
+    flagged ``duplicate=true`` (a re-ACK of duplicate DATA/FIN) gets a double
+    ring; every packet carries its seq label.  The flags come from the send
+    event itself, so link delays cannot attach them to the wrong packet.
     """
 
     STEP_MS = 30
@@ -307,14 +319,18 @@ class PacketAnimator:
         caller may then fall back to flashing the device).
         """
         name = event_fields.get("event")
-        if name not in ("send", "delay", "drop") or self.closed:
+        if self.closed or name not in ("send", "delay", "drop"):
             return False
         link = (event_fields.get("device"), event_fields.get("next_hop"))
         known = self.positions()
         if link[0] not in known or link[1] not in known:
             return False
         if name == "send":
-            job = _Job("send", event_fields.get("type"))
+            seq = event_fields.get("seq")
+            job = _Job("send", event_fields.get("type"),
+                       seq=seq if seq and seq.isdigit() else None,
+                       retransmit=event_fields.get("retransmit") == "true",
+                       duplicate=event_fields.get("duplicate") == "true")
         elif name == "delay":
             try:
                 delay_ms = float(event_fields.get("delay_ms", 0))
@@ -366,28 +382,49 @@ class PacketAnimator:
         self.queues.pop(link, None)
         self.active.discard(link)
 
+    @staticmethod
+    def _packet_colors(job):
+        if job.retransmit:
+            return RETRANSMIT, BAD, 3
+        if job.packet_type == "DATA":
+            return ACCENT, "#ffffff", 1
+        if job.packet_type == "ACK":
+            return ACK, "#ffffff", 1
+        return GOOD, "#ffffff", 1  # FIN and anything else
+
     def _begin(self, job, link):
         positions = self.positions()
         if link[0] not in positions or link[1] not in positions:
             return False  # layout changed since it was queued; skip it
         (x1, y1), (x2, y2) = positions[link[0]], positions[link[1]]
         job.start, job.end = (x1, y1), (x2, y2)
+        canvas = self.canvas
         if job.kind == "send":
             job.steps = self.MOVE_STEPS
-            color = ACCENT if job.packet_type == "DATA" else GOOD
-            job.item = self.canvas.create_oval(
-                x1 - 8, y1 - 8, x1 + 8, y1 + 8, fill=color, outline="#ffffff", width=1
-            )
+            fill, outline, width = self._packet_colors(job)
+            job.parts.append((canvas.create_oval(
+                x1 - 8, y1 - 8, x1 + 8, y1 + 8, fill=fill, outline=outline, width=width
+            ), 8, 0))
+            if job.duplicate:  # double ring around a duplicate acknowledgment
+                for radius in (13, 18):
+                    job.parts.append((canvas.create_oval(
+                        x1 - radius, y1 - radius, x1 + radius, y1 + radius,
+                        outline=ACK, width=2
+                    ), radius, 0))
+            if job.seq is not None:
+                job.parts.append((canvas.create_text(
+                    x1, y1 - 16, text=job.seq, fill=TEXT, font=("Segoe UI", 8, "bold")
+                ), None, -16))
         elif job.kind == "delay":
             job.steps = max(self.DELAY_MIN_STEPS, min(
                 self.DELAY_MAX_STEPS, round(job.delay_ms / self.STEP_MS)))
             mx, my = (x1 + x2) / 2, (y1 + y2) / 2
-            job.item = self.canvas.create_oval(
+            job.parts.append((canvas.create_oval(
                 mx - 8, my - 8, mx + 8, my + 8, fill=WARN, outline="#ffffff", width=1
-            )
+            ), 8, 0))
         else:
             job.steps = self.DROP_STEPS
-            job.item = self.canvas.create_line(x1, y1, x2, y2, fill=BAD, width=5)
+            job.parts.append((canvas.create_line(x1, y1, x2, y2, fill=BAD, width=5), None, 0))
         return True
 
     def _step(self, link, job, step):
@@ -395,7 +432,8 @@ class PacketAnimator:
             return
         try:
             if step > job.steps:
-                self.canvas.delete(job.item)
+                for item, _, _ in job.parts:
+                    self.canvas.delete(item)
                 self.active.discard(link)
                 self._start_next(link)
                 return
@@ -403,9 +441,14 @@ class PacketAnimator:
                 fraction = step / job.steps
                 x = job.start[0] + (job.end[0] - job.start[0]) * fraction
                 y = job.start[1] + (job.end[1] - job.start[1]) * fraction
-                self.canvas.coords(job.item, x - 8, y - 8, x + 8, y + 8)
+                for item, radius, dy in job.parts:
+                    if radius is None:
+                        self.canvas.coords(item, x, y + dy)
+                    else:
+                        self.canvas.coords(item, x - radius, y - radius,
+                                           x + radius, y + radius)
             elif job.kind == "delay":
-                self.canvas.itemconfigure(job.item, width=1 + 2 * (step % 2))
+                self.canvas.itemconfigure(job.parts[0][0], width=1 + 2 * (step % 2))
             self.after(self.STEP_MS, self._step, link, job, step + 1)
         except tk.TclError:
             self.close()  # window closed or canvas gone

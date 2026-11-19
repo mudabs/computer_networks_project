@@ -1,4 +1,4 @@
-﻿"""Headless tests for the queued packet animation pipeline.
+"""Headless tests for the queued packet animation pipeline.
 
 A fake canvas and a manual scheduler stand in for Tk: nothing sleeps, no
 window or sockets are used, and "time" only advances when a test says so.
@@ -39,6 +39,9 @@ class FakeCanvas:
 
     def create_line(self, *coords, **options):
         return self._create("line", coords, options)
+
+    def create_text(self, *coords, **options):
+        return self._create("text", coords, options)
 
     def coords(self, item, *coords):
         self._check()
@@ -100,7 +103,7 @@ class AnimatorTestCase(unittest.TestCase):
 class FifoTests(AnimatorTestCase):
     def test_same_link_packets_never_overlap_and_run_in_order(self):
         first = send("H1", "A", "DATA")
-        second = send("H1", "A", "ACK")
+        second = send("H1", "A", "FIN")  # non-DATA keeps the GOOD color
         third = send("H1", "A", "DATA")
         for fields in (first, second, third):
             self.assertTrue(self.animator.handle(fields))
@@ -108,7 +111,7 @@ class FifoTests(AnimatorTestCase):
         # Only the head is on screen; the rest wait in FIFO order.
         self.assertEqual(len(self.canvas.items), 1)
         self.assertEqual([j.packet_type for j in self.animator.queues[("H1", "A")]],
-                         ["ACK", "DATA"])
+                         ["FIN", "DATA"])
 
         on_screen_max = 0
         while self.scheduler.pending:
@@ -279,6 +282,163 @@ class SafetyTests(AnimatorTestCase):
         self.scheduler.run_all()
         self.assertEqual(len(self.canvas.created), 1)  # second job skipped
         self.assertEqual((self.animator.active, self.animator.queues), (set(), {}))
+
+
+def ev(name, device, next_hop, type_="DATA", seq="1", msg_id="5", **extra):
+    """A parsed log event as NetworkGUI hands it to the animator."""
+    return {"event": name, "device": device, "next_hop": next_hop,
+            "type": type_, "seq": seq, "msg_id": msg_id, **extra}
+
+
+class ReliableVisualTests(AnimatorTestCase):
+    def ovals(self):
+        return [(i, o) for i, kind, o in self.canvas.created if kind == "oval"]
+
+    def texts(self):
+        return [(i, o) for i, kind, o in self.canvas.created if kind == "text"]
+
+    def feed(self, *events):
+        """Deliver events in order, letting each link finish its visuals first."""
+        for fields in events:
+            self.animator.handle(fields)
+            self.scheduler.run_all()
+
+    def fills(self):
+        return [o["fill"] for _, o in self.ovals() if "fill" in o]
+
+    def rings(self):
+        return [o for _, o in self.ovals() if "fill" not in o]
+
+    def test_data_ack_and_retransmission_look_different(self):
+        self.feed(
+            ev("send", "H1", "A", "DATA"),
+            ev("send", "A", "H1", "ACK"),
+            ev("send", "H1", "A", "DATA", retransmit="true"),
+        )
+        (_, data), (_, ack), (_, retransmission) = self.ovals()
+        self.assertEqual(data["fill"], gui.ACCENT)
+        self.assertEqual(ack["fill"], gui.ACK)
+        self.assertEqual((retransmission["fill"], retransmission["outline"]),
+                         (gui.RETRANSMIT, gui.BAD))
+        self.assertEqual(len({data["fill"], ack["fill"], retransmission["fill"]}), 3)
+
+    def test_fin_keeps_the_existing_non_data_styling(self):
+        self.animator.handle(ev("send", "H1", "A", "FIN", seq="3"))
+        self.assertEqual(self.ovals()[0][1]["fill"], gui.GOOD)
+
+    def test_sequence_label_follows_the_packet_and_is_cleaned_up(self):
+        self.animator.handle(ev("send", "H1", "A", "DATA", seq="7"))
+        (oval, _), (label, options) = self.ovals()[0], self.texts()[0]
+        self.assertEqual(options["text"], "7")
+        for _ in range(PacketAnimator.MOVE_STEPS // 2):
+            self.scheduler.run_one()
+        left, top, right, bottom = self.canvas.items[oval]["coords"]
+        label_x, label_y = self.canvas.items[label]["coords"]
+        self.assertEqual((label_x, label_y), ((left + right) / 2, (top + bottom) / 2 - 16))
+        self.assertGreater(label_x, 0)  # it moved off the source node
+        self.scheduler.run_all()
+        self.assertEqual(self.canvas.items, {})
+        self.assertEqual(sorted(self.canvas.deleted), sorted([oval, label]))
+
+    def test_packets_without_a_numeric_seq_get_no_label(self):
+        for seq in ("-", None, "x"):
+            fields = ev("send", "H1", "A", "DATA")
+            fields["seq"] = seq
+            self.feed(fields)
+        self.assertEqual(self.texts(), [])
+        self.assertEqual(len(self.ovals()), 3)
+
+    # -- explicit flags on send events (correct even when links delay packets) --
+
+    def test_delayed_original_then_delayed_retransmission(self):
+        # Link delay (500 ms) > sender timeout: the original is still queued when
+        # the retransmission is issued, so the original's send arrives first.
+        self.feed(
+            ev("delay", "H1", "A", "DATA", seq="1", delay_ms="500.0"),   # original
+            ev("retransmit", "H1", "A", "DATA", seq="1", retries="1"),   # host retry
+            ev("delay", "H1", "A", "DATA", seq="1", delay_ms="500.0"),   # retry delayed
+            ev("send", "H1", "A", "DATA", seq="1"),                      # original lands
+            ev("send", "H1", "A", "DATA", seq="1", retransmit="true"),   # retry lands
+        )
+        packets = [o for _, o in self.ovals() if o.get("fill") != gui.WARN]
+        self.assertEqual([(p["fill"], p["outline"]) for p in packets],
+                         [(gui.ACCENT, "#ffffff"), (gui.RETRANSMIT, gui.BAD)])
+
+    def test_delayed_original_ack_then_delayed_duplicate_ack(self):
+        self.feed(
+            ev("delay", "H2", "D", "ACK", seq="2", delay_ms="500.0"),   # first ACK
+            ev("duplicate", "H2", "D", "DATA", seq="2"),                # host saw a dup
+            ev("delay", "H2", "D", "ACK", seq="2", delay_ms="500.0"),   # re-ACK delayed
+        )
+        self.assertEqual(self.rings(), [])  # nothing is guessed from earlier events
+        self.feed(
+            ev("send", "H2", "D", "ACK", seq="2"),                      # original lands
+            ev("send", "H2", "D", "ACK", seq="2", duplicate="true"),    # re-ACK lands
+        )
+        acks = [o for _, o in self.ovals() if o.get("fill") == gui.ACK]
+        self.assertEqual(len(acks), 2)
+        self.assertEqual(len(self.rings()), 2)  # a double ring, on the re-ACK only
+        self.assertEqual(self.canvas.items, {})
+
+    def test_duplicate_ack_gets_a_double_ring_in_addition_to_the_ack(self):
+        self.animator.handle(ev("send", "H2", "D", "ACK", seq="2", duplicate="true"))
+        ovals = self.ovals()
+        self.assertEqual(len(ovals), 3)  # the ACK itself plus two rings
+        self.assertEqual(ovals[0][1]["fill"], gui.ACK)
+        self.assertEqual([o["outline"] for _, o in ovals[1:]], [gui.ACK, gui.ACK])
+        self.assertEqual(self.texts()[0][1]["text"], "2")
+        self.scheduler.run_all()
+        self.assertEqual(self.canvas.items, {})  # rings and label cleaned up too
+
+    def test_dropped_retransmission_shows_only_the_drop_and_leaves_no_state(self):
+        self.feed(
+            ev("retransmit", "H1", "A", "DATA", seq="1", retries="1"),
+            ev("drop", "H1", "A", "DATA", seq="1", reason="injected_loss",
+               retransmit="true"),
+        )
+        self.assertEqual(self.ovals(), [])  # no packet moved
+        self.assertEqual([k for _, k, _ in self.canvas.created], ["line"])
+        # Nothing is remembered: the next plain send is an ordinary packet.
+        self.feed(ev("send", "H1", "A", "DATA", seq="1"))
+        self.assertEqual(self.fills(), [gui.ACCENT])
+        self.assertEqual(self.animator.queues, {})
+        self.assertEqual(self.animator.active, set())
+
+    def test_normal_sends_remain_unmarked(self):
+        self.feed(
+            ev("send", "H1", "A", "DATA", seq="0"),
+            ev("send", "A", "H1", "ACK", seq="0"),
+            ev("send", "H1", "A", "FIN", seq="1"),
+            ev("send", "H1", "A", "DATA", seq="0", retransmit="false"),
+            ev("send", "H1", "A", "DATA", seq="0", duplicate="no"),
+        )
+        self.assertEqual(self.fills(),
+                         [gui.ACCENT, gui.ACK, gui.GOOD, gui.ACCENT, gui.ACCENT])
+        self.assertEqual(self.rings(), [])
+        self.assertTrue(all(o["outline"] == "#ffffff" for _, o in self.ovals()))
+
+    def test_retransmit_and_duplicate_events_alone_draw_nothing(self):
+        self.assertFalse(self.animator.handle(ev("retransmit", "H1", "A")))
+        self.assertFalse(self.animator.handle(ev("duplicate", "H2", "D", "DATA")))
+        self.assertEqual(self.canvas.created, [])
+        self.feed(ev("send", "H1", "A"))  # an unflagged send is not retroactively marked
+        self.assertEqual(self.fills(), [gui.ACCENT])
+
+    def test_labelled_packets_on_one_link_still_never_overlap(self):
+        for seq in range(5):
+            self.animator.handle(ev("send", "H1", "A", seq=str(seq)))
+        on_screen = 0
+        while self.scheduler.pending:
+            self.scheduler.run_one()
+            on_screen = max(on_screen, len(self.canvas.items))
+        self.assertEqual(on_screen, 2)  # one packet shape + its label at a time
+        self.assertEqual([o["text"] for _, o in self.texts()], list("01234"))
+
+    def test_label_is_removed_with_the_packet_when_the_canvas_dies(self):
+        self.animator.handle(ev("send", "H1", "A", seq="1"))
+        self.canvas.fail = True
+        self.scheduler.run_all()  # TclError is absorbed
+        self.assertTrue(self.animator.closed)
 
 
 if __name__ == "__main__":
