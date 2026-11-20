@@ -23,7 +23,7 @@ class LinkTests(unittest.TestCase):
         sender, sock = self.make_sender(delay_ms=100)
         delivered = threading.Event()
         sock.sendto.side_effect = lambda *args: delivered.set()
-        data = Packet('H1', 'H2', 7, 'DATA', 1, 'hello').to_bytes()
+        data = Packet('H1', 'H2', 7, 'DATA', 1, 0, 'hello').to_bytes()
         sender.send(data, 'B')
         sock.sendto.assert_not_called()
         sender.send(data, 'C')
@@ -41,7 +41,7 @@ class LinkTests(unittest.TestCase):
             for number in range(20):
                 before = sock.sendto.call_count
                 sender.send(Packet('H1', 'H2', 7, ('DATA', 'RESPONSE')[number % 2],
-                                   number, 'hello').to_bytes(), 'B')
+                                   number, 0, 'hello').to_bytes(), 'B')
                 sequence.append(sock.sendto.call_count > before)
             decisions.append(sequence)
         self.assertEqual(*decisions)
@@ -65,10 +65,10 @@ class LinkTests(unittest.TestCase):
             router = Router('A', use_upper_path(Config()), run_id='drop-test')
             self.addCleanup(router.close)
             with self.assertLogs(level='INFO') as captured:
-                router.forward(Packet('H1', 'H2', 1, 'DATA', 7, 'hello').to_bytes())
-                router.forward(Packet('H1', 'unknown', 8, 'DATA', 8, 'hello').to_bytes())
+                router.forward(Packet('H1', 'H2', 1, 'DATA', 7, 0, 'hello').to_bytes())
+                router.forward(Packet('H1', 'unknown', 8, 'DATA', 8, 0, 'hello').to_bytes())
             trace = '\n'.join(captured.output)
             self.assertIn('reason=hop_limit_exhausted', trace)
             self.assertIn('reason=no_route', trace)
-            self.assertIn('msg_id=7 type=DATA src=H1 dst=H2 next_hop=B hop_limit=1', trace)
+            self.assertIn('msg_id=7 type=DATA src=H1 dst=H2 next_hop=B ttl=1', trace)
             router.sock.sendto.assert_not_called()

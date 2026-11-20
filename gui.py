@@ -12,14 +12,17 @@ Run from the repository root with:
 
 import copy
 import logging
+import math
 import queue
 import threading
 import time
+from collections import deque
 import tkinter as tk
 from tkinter import messagebox, ttk
 
 from config import Config
 from host import Host
+from packet import Packet, PacketError
 from router import Router
 
 
@@ -35,6 +38,8 @@ GOOD = "#34d399"
 WARN = "#fbbf24"
 BAD = "#fb7185"
 GRID = "#2a3950"
+ACK = "#f472b6"          # acknowledgments
+RETRANSMIT = "#fb923c"  # retransmitted packets
 
 
 class QueueLogHandler(logging.Handler):
@@ -61,6 +66,144 @@ def parse_event(message):
     return fields
 
 
+MAX_TRANSFER_MESSAGES = 100
+
+
+def parse_transfer_settings(source, destination, message, count_text,
+                            timeout_text, retries_text):
+    """Validate the reliable-transfer inputs; raise ValueError with a GUI-ready message."""
+    if source == destination:
+        raise ValueError("Source and destination must be different hosts.")
+    if not message:
+        raise ValueError("Enter a message to send.")
+    try:
+        count = int(str(count_text).strip())
+    except ValueError:
+        raise ValueError("Message count must be a whole number.") from None
+    if not 1 <= count <= MAX_TRANSFER_MESSAGES:
+        raise ValueError(
+            f"Message count must be between 1 and {MAX_TRANSFER_MESSAGES}."
+        )
+    try:
+        timeout = float(str(timeout_text).strip())
+    except ValueError:
+        raise ValueError("Timeout must be a positive number.") from None
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("Timeout must be a positive number.")
+    try:
+        max_retries = int(str(retries_text).strip())
+    except ValueError:
+        raise ValueError("Max retries must be a whole number.") from None
+    if max_retries < 0:
+        raise ValueError("Max retries must be zero or more.")
+    try:
+        Packet(source, destination, 8, "DATA", 0, 0, message).to_bytes()
+    except PacketError as exc:
+        raise ValueError(f"Message cannot be sent: {exc}") from None
+    return {"messages": [message] * count, "timeout": timeout,
+            "max_retries": max_retries}
+
+
+class TransferMetrics:
+    """Counters for the current reliable transfer, fed by parsed log events.
+
+    Pure logic (no Tk): only events whose ``run_id`` matches the current run
+    count, so late records from earlier GUI runs are ignored.
+    """
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self, run_id=None, total=0):
+        self.run_id, self.total = run_id, total
+        self.delivered_keys = set()  # (src, msg_id, seq): a message counts once
+        self.retries = self.duplicates = self.failures = 0
+
+    @property
+    def delivered(self):
+        return len(self.delivered_keys)
+
+    def apply(self, fields):
+        """Update from one event; True if any counter changed."""
+        if self.run_id is None or fields.get("run_id") != self.run_id:
+            return False
+        name = fields.get("event")
+        if name == "transfer_start":
+            count = fields.get("count", "")
+            if not count.isdigit():
+                return False
+            self.total = int(count)
+        elif name == "deliver" and fields.get("type") == "DATA":
+            key = (fields.get("src"), fields.get("msg_id"), fields.get("seq"))
+            if key in self.delivered_keys:
+                return False
+            self.delivered_keys.add(key)
+        elif name == "retransmit":
+            self.retries += 1
+        elif name == "duplicate":
+            self.duplicates += 1
+        elif name == "failure":
+            self.failures += 1
+        else:
+            return False
+        return True
+
+    def summary(self):
+        return (f"Delivered: {self.delivered}/{self.total}   ·   Retries: {self.retries}"
+                f"   ·   Duplicates: {self.duplicates}   ·   Failures: {self.failures}")
+
+
+# Fixed settings and seeds make every scenario reproducible.  With these values
+# (loss 0.4, 4 messages + FIN, up to 5 retries) the seeded loss sequences give
+# two lost packets and a completed transfer for the two "dropped" scenarios.
+SCENARIO_LOSS = 0.4
+SCENARIOS = {
+    "normal": {"label": "Normal delivery", "count": 4, "timeout": 0.3, "max_retries": 5},
+    "dropped_data": {"label": "Dropped DATA", "count": 4, "timeout": 0.3, "max_retries": 5,
+                     "seed": 1},
+    "dropped_ack": {"label": "Dropped ACK", "count": 4, "timeout": 0.3, "max_retries": 5,
+                    "seed": 2},
+    "unreachable": {"label": "Unreachable destination (expected FAILED)", "count": 3,
+                    "timeout": 0.3, "max_retries": 2},
+}
+
+
+def build_scenario(name, base_network, base_routes, source, destination):
+    """In-memory configuration for a reliable demo scenario.
+
+    Always starts from deep copies of the given pristine data, so the inputs
+    (and the JSON files they came from) are never modified and "normal"
+    restores ordinary conditions and routes.
+    """
+    if name not in SCENARIOS:
+        raise ValueError(f"Unknown scenario {name!r}")
+    if source == destination:
+        raise ValueError("Source and destination must be different hosts.")
+    plan = dict(SCENARIOS[name])
+    network = copy.deepcopy(base_network)
+    routes = copy.deepcopy(base_routes)
+    network["conditions"] = []
+
+    def first_hop(host):
+        hops = Config(network_data=network, route_data=routes).get_neighbors(host)
+        if not hops:
+            raise ValueError(f"{host} has no neighbor")
+        return hops[0]
+
+    if name == "dropped_data":  # the source's first-hop link loses DATA
+        network["conditions"] = [{"from": source, "to": first_hop(source),
+                                  "loss": SCENARIO_LOSS, "delay_ms": 0,
+                                  "seed": plan["seed"]}]
+    elif name == "dropped_ack":  # the destination's first-hop link loses ACKs
+        network["conditions"] = [{"from": destination, "to": first_hop(destination),
+                                  "loss": SCENARIO_LOSS, "delay_ms": 0,
+                                  "seed": plan["seed"]}]
+    elif name == "unreachable":  # the source's first router forgets the destination
+        routes[first_hop(source)].pop(destination, None)
+    plan["network_data"], plan["route_data"] = network, routes
+    return plan
+
+
 class NetworkController:
     """Run the real network devices in background threads for the GUI."""
 
@@ -72,6 +215,12 @@ class NetworkController:
         self.destination = None
         self.run_id = None
         self.running = False
+        self.mode = "best_effort"
+        self.network_data = None
+        self.route_data = None
+        self.transfer_thread = None
+        self._transfer_token = 0
+        self._transfer_events = queue.Queue()
 
     @staticmethod
     def _run_device(device):
@@ -85,11 +234,26 @@ class NetworkController:
                 "GUI device thread failed for %s", device.id
             )
 
-    def start(self, network_data, route_data, source, destination):
+    def start(self, network_data, route_data, source, destination,
+              mode="best_effort", timeout=None, max_retries=None):
         if source == destination:
             raise ValueError("Source and destination hosts must be different")
+        if mode not in ("best_effort", "reliable"):
+            raise ValueError(f"Unknown mode {mode!r}")
+
+        # Only pass what was asked for so best-effort Hosts keep their defaults.
+        host_options = {}
+        if mode != "best_effort":
+            host_options["mode"] = mode
+        if timeout is not None:
+            host_options["timeout"] = timeout
+        if max_retries is not None:
+            host_options["max_retries"] = max_retries
 
         self.stop()
+        self.mode = mode
+        self.network_data = network_data
+        self.route_data = route_data
         self.config = Config(network_data=network_data, route_data=route_data)
         self.source = source
         self.destination = destination
@@ -108,7 +272,7 @@ class NetworkController:
         for device_id, entry in self.config.data["devices"].items():
             if entry["type"] == "host":
                 self.devices[device_id] = Host(
-                    device_id, self.config, run_id=self.run_id
+                    device_id, self.config, run_id=self.run_id, **host_options
                 )
 
         for device_id, device in self.devices.items():
@@ -132,7 +296,47 @@ class NetworkController:
         destination_thread.start()
         self.running = True
 
+    def begin_transfer(self, messages):
+        """Start a reliable transfer from the source in a background worker."""
+        if not self.running or self.mode != "reliable":
+            raise RuntimeError("The network is not running in reliable mode")
+        if self.transfer_thread is not None and self.transfer_thread.is_alive():
+            raise RuntimeError("A transfer is already running")
+        token = self._transfer_token
+        self.transfer_thread = threading.Thread(
+            target=self._transfer_worker,
+            args=(token, self.devices[self.source], list(messages), self.destination),
+            name=f"transfer-{self.source}",
+            daemon=True,
+        )
+        self.threads.append(self.transfer_thread)
+        self.transfer_thread.start()
+
+    def _transfer_worker(self, token, host, messages, destination):
+        try:
+            outcome = host.start_transfer(messages, destination)
+        except Exception as exc:
+            if token != self._transfer_token:
+                return  # sockets were closed by stop(); expected, not an error
+            outcome = {"status": "ERROR", "error": exc}
+        if token == self._transfer_token:
+            self._transfer_events.put((token, outcome))
+
+    def poll_transfer(self):
+        """Return the finished transfer's result dict, or None. Main-thread safe."""
+        while True:
+            try:
+                token, outcome = self._transfer_events.get_nowait()
+            except queue.Empty:
+                return None
+            if token == self._transfer_token:
+                return outcome
+
     def probe(self, payload, timeout):
+        if self.running and self.mode != "best_effort":
+            # Restore an ordinary best-effort network before using Host.probe.
+            self.start(self.network_data, self.route_data,
+                       self.source, self.destination)
         if not self.running:
             raise RuntimeError("The network is not running")
         source_host = self.devices[self.source]
@@ -145,6 +349,7 @@ class NetworkController:
 
     def stop(self):
         self.running = False
+        self._transfer_token += 1  # any in-flight transfer is now stale
         devices = list(self.devices.values())
         self.devices = {}
         for device in devices:
@@ -155,6 +360,198 @@ class NetworkController:
         for thread in self.threads:
             thread.join(timeout=1.0)
         self.threads = []
+        self.transfer_thread = None
+        while True:  # discard anything a stopped transfer left behind
+            try:
+                self._transfer_events.get_nowait()
+            except queue.Empty:
+                break
+
+
+class _Job:
+    """One visual-only animation on a directed link."""
+
+    __slots__ = ("kind", "packet_type", "delay_ms", "seq", "retransmit",
+                 "duplicate", "parts", "steps", "start", "end")
+
+    def __init__(self, kind, packet_type=None, delay_ms=0.0, seq=None,
+                 retransmit=False, duplicate=False):
+        self.kind, self.packet_type, self.delay_ms = kind, packet_type, delay_ms
+        self.seq, self.retransmit, self.duplicate = seq, retransmit, duplicate
+        self.parts = []  # (canvas item, radius or None for text/line, y offset)
+        self.start = self.end = None
+        self.steps = 0
+
+
+class PacketAnimator:
+    """Bounded FIFO packet animations, one queue per directed link.
+
+    Visual only: it reads already-parsed log events and never touches the
+    network.  Packets on one link animate strictly one after another, links
+    animate independently, and everything is driven by ``after`` callbacks.
+
+    Styling: DATA, ACK and other packets have their own colors; a ``send``
+    event flagged ``retransmit=true`` is drawn as a retransmission and one
+    flagged ``duplicate=true`` (a re-ACK of duplicate DATA/FIN) gets a double
+    ring; every packet carries its seq label.  The flags come from the send
+    event itself, so link delays cannot attach them to the wrong packet.
+    """
+
+    STEP_MS = 30
+    MOVE_STEPS = 20
+    DELAY_MIN_STEPS, DELAY_MAX_STEPS = 5, 20   # 150-600 ms, whatever delay_ms is
+    DROP_STEPS = 10
+    MAX_PER_LINK = 40
+    MAX_TOTAL = 200
+
+    def __init__(self, canvas, after, positions):
+        self.canvas, self.after, self.positions = canvas, after, positions
+        self.queues = {}      # (source, next_hop) -> deque of waiting _Job
+        self.active = set()   # links with a job currently on screen
+        self.total = 0        # jobs waiting across all queues
+        self.discarded = 0    # old visual entries dropped by the bounds
+        self.closed = False
+
+    def handle(self, event_fields):
+        """Queue the visual for a send/delay/drop event.
+
+        Returns True when the event was drawn on a link, False otherwise (the
+        caller may then fall back to flashing the device).
+        """
+        name = event_fields.get("event")
+        if self.closed or name not in ("send", "delay", "drop"):
+            return False
+        link = (event_fields.get("device"), event_fields.get("next_hop"))
+        known = self.positions()
+        if link[0] not in known or link[1] not in known:
+            return False
+        if name == "send":
+            seq = event_fields.get("seq")
+            job = _Job("send", event_fields.get("type"),
+                       seq=seq if seq and seq.isdigit() else None,
+                       retransmit=event_fields.get("retransmit") == "true",
+                       duplicate=event_fields.get("duplicate") == "true")
+        elif name == "delay":
+            try:
+                delay_ms = float(event_fields.get("delay_ms", 0))
+            except ValueError:
+                delay_ms = 0.0
+            job = _Job("delay", delay_ms=delay_ms)
+        else:
+            job = _Job("drop")
+        self._enqueue(link, job)
+        return True
+
+    def close(self):
+        """Stop scheduling; pending callbacks become no-ops."""
+        self.closed = True
+        self.queues.clear()
+        self.active.clear()
+        self.total = 0
+
+    def _enqueue(self, link, job):
+        queue_ = self.queues.setdefault(link, deque())
+        if len(queue_) >= self.MAX_PER_LINK:
+            queue_.popleft()
+            self.total -= 1
+            self.discarded += 1
+        queue_.append(job)
+        self.total += 1
+        if self.total > self.MAX_TOTAL:
+            longest = max(self.queues, key=lambda key: len(self.queues[key]))
+            self.queues[longest].popleft()
+            self.total -= 1
+            self.discarded += 1
+        if link not in self.active:
+            self._start_next(link)
+
+    def _start_next(self, link):
+        queue_ = self.queues.get(link)
+        while queue_:
+            job = queue_.popleft()
+            self.total -= 1
+            try:
+                begun = self._begin(job, link)
+            except tk.TclError:
+                self.close()
+                return
+            if begun:
+                self.active.add(link)
+                self.after(self.STEP_MS, self._step, link, job, 1)
+                return
+        self.queues.pop(link, None)
+        self.active.discard(link)
+
+    @staticmethod
+    def _packet_colors(job):
+        if job.retransmit:
+            return RETRANSMIT, BAD, 3
+        if job.packet_type == "DATA":
+            return ACCENT, "#ffffff", 1
+        if job.packet_type == "ACK":
+            return ACK, "#ffffff", 1
+        return GOOD, "#ffffff", 1  # FIN and anything else
+
+    def _begin(self, job, link):
+        positions = self.positions()
+        if link[0] not in positions or link[1] not in positions:
+            return False  # layout changed since it was queued; skip it
+        (x1, y1), (x2, y2) = positions[link[0]], positions[link[1]]
+        job.start, job.end = (x1, y1), (x2, y2)
+        canvas = self.canvas
+        if job.kind == "send":
+            job.steps = self.MOVE_STEPS
+            fill, outline, width = self._packet_colors(job)
+            job.parts.append((canvas.create_oval(
+                x1 - 8, y1 - 8, x1 + 8, y1 + 8, fill=fill, outline=outline, width=width
+            ), 8, 0))
+            if job.duplicate:  # double ring around a duplicate acknowledgment
+                for radius in (13, 18):
+                    job.parts.append((canvas.create_oval(
+                        x1 - radius, y1 - radius, x1 + radius, y1 + radius,
+                        outline=ACK, width=2
+                    ), radius, 0))
+            if job.seq is not None:
+                job.parts.append((canvas.create_text(
+                    x1, y1 - 16, text=job.seq, fill=TEXT, font=("Segoe UI", 8, "bold")
+                ), None, -16))
+        elif job.kind == "delay":
+            job.steps = max(self.DELAY_MIN_STEPS, min(
+                self.DELAY_MAX_STEPS, round(job.delay_ms / self.STEP_MS)))
+            mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+            job.parts.append((canvas.create_oval(
+                mx - 8, my - 8, mx + 8, my + 8, fill=WARN, outline="#ffffff", width=1
+            ), 8, 0))
+        else:
+            job.steps = self.DROP_STEPS
+            job.parts.append((canvas.create_line(x1, y1, x2, y2, fill=BAD, width=5), None, 0))
+        return True
+
+    def _step(self, link, job, step):
+        if self.closed:
+            return
+        try:
+            if step > job.steps:
+                for item, _, _ in job.parts:
+                    self.canvas.delete(item)
+                self.active.discard(link)
+                self._start_next(link)
+                return
+            if job.kind == "send":
+                fraction = step / job.steps
+                x = job.start[0] + (job.end[0] - job.start[0]) * fraction
+                y = job.start[1] + (job.end[1] - job.start[1]) * fraction
+                for item, radius, dy in job.parts:
+                    if radius is None:
+                        self.canvas.coords(item, x, y + dy)
+                    else:
+                        self.canvas.coords(item, x - radius, y - radius,
+                                           x + radius, y + radius)
+            elif job.kind == "delay":
+                self.canvas.itemconfigure(job.parts[0][0], width=1 + 2 * (step % 2))
+            self.after(self.STEP_MS, self._step, link, job, step + 1)
+        except tk.TclError:
+            self.close()  # window closed or canvas gone
 
 
 class NetworkGUI(tk.Tk):
@@ -184,14 +581,20 @@ class NetworkGUI(tk.Tk):
         self.destination_var = tk.StringVar(value="H2")
         self.message_var = tk.StringVar(value="Hello from the GUI")
         self.timeout_var = tk.StringVar(value="3.0")
+        self.count_var = tk.StringVar(value="3")
+        self.retries_var = tk.StringVar(value="3")
         self.observe_late_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Starting network…")
         self.result_var = tk.StringVar(value="No probe sent yet")
-        self.path_var = tk.StringVar(value="Path: —")
-        self.run_var = tk.StringVar(value="Run: —")
+        self.path_var = tk.StringVar(value="Path: -")
+        self.run_var = tk.StringVar(value="Run: -")
         self.packet_count_var = tk.StringVar(value="0 sent")
         self.drop_count_var = tk.StringVar(value="0 dropped")
+        self.metrics = TransferMetrics()
+        self.transfer_var = tk.StringVar(value="No reliable transfer yet")
+        self.active_scenario = None
         self.probe_in_flight = False
+        self.transfer_in_flight = False
         self.observe_late = False
         self.active_source = None
         self.active_destination = None
@@ -202,6 +605,7 @@ class NetworkGUI(tk.Tk):
 
         self._configure_styles()
         self._build_layout()
+        self.animator = PacketAnimator(self.canvas, self.after, lambda: self.node_positions)
         self._refresh_route_controls()
         self._refresh_condition_controls()
         self._draw_topology()
@@ -286,10 +690,32 @@ class NetworkGUI(tk.Tk):
         )
         self.status_badge.pack(side="right", padx=28, pady=19)
 
-        self.sidebar = ttk.Frame(self, style="Panel.TFrame", padding=(20, 16))
-        self.sidebar.grid(row=1, column=0, sticky="nsew")
-        self.sidebar.configure(width=self.sidebar_width)
-        self.sidebar.grid_propagate(False)
+        # The controls are taller than the default window, so the sidebar
+        # scrolls instead of squeezing its lower buttons out of view.
+        shell = ttk.Frame(self, style="Panel.TFrame")
+        shell.grid(row=1, column=0, sticky="nsew")
+        shell.configure(width=self.sidebar_width)
+        shell.grid_propagate(False)
+        shell.rowconfigure(0, weight=1)
+        shell.columnconfigure(0, weight=1)
+        side_canvas = tk.Canvas(shell, bg=PANEL, highlightthickness=0, bd=0)
+        side_scroll = ttk.Scrollbar(shell, orient="vertical", command=side_canvas.yview)
+        side_canvas.configure(yscrollcommand=side_scroll.set)
+        side_canvas.grid(row=0, column=0, sticky="nsew")
+        side_scroll.grid(row=0, column=1, sticky="ns")
+        self.sidebar = ttk.Frame(side_canvas, style="Panel.TFrame", padding=(20, 16))
+        sidebar_window = side_canvas.create_window((0, 0), window=self.sidebar, anchor="nw")
+        self.sidebar.bind("<Configure>", lambda _event: side_canvas.configure(
+            scrollregion=side_canvas.bbox("all")))
+        side_canvas.bind("<Configure>", lambda event: side_canvas.itemconfigure(
+            sidebar_window, width=event.width))
+
+        def wheel(event):
+            if side_canvas.yview() != (0.0, 1.0):
+                side_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+        shell.bind("<Enter>", lambda _event: shell.bind_all("<MouseWheel>", wheel))
+        shell.bind("<Leave>", lambda _event: shell.unbind_all("<MouseWheel>"))
         self._build_sidebar()
 
         self.content = ttk.Frame(self, style="Panel.TFrame", padding=(0, 0, 20, 20))
@@ -335,6 +761,37 @@ class NetworkGUI(tk.Tk):
             command=self._send_probe
         )
         self.send_button.pack(fill="x", pady=(0, 14))
+
+        ttk.Label(self.sidebar, text="RELIABLE TRANSFER", style="Section.TLabel").pack(
+            anchor="w", pady=(0, 8)
+        )
+        self._field_label("Message count")
+        ttk.Entry(self.sidebar, textvariable=self.count_var).pack(fill="x", pady=(0, 9))
+        self._field_label("Max retries")
+        ttk.Entry(self.sidebar, textvariable=self.retries_var).pack(fill="x", pady=(0, 9))
+        self.transfer_button = ttk.Button(
+            self.sidebar, text="Start reliable transfer", style="Accent.TButton",
+            command=self._start_transfer
+        )
+        self.transfer_button.pack(fill="x", pady=(0, 4))
+        self.stop_button = ttk.Button(
+            self.sidebar, text="Stop transfer", command=self._stop_transfer,
+            state="disabled"
+        )
+        self.stop_button.pack(fill="x", pady=(0, 14))
+
+        ttk.Label(self.sidebar, text="RELIABLE SCENARIOS", style="Section.TLabel").pack(
+            anchor="w", pady=(0, 6)
+        )
+        scenario_grid = tk.Frame(self.sidebar, bg=PANEL)
+        scenario_grid.pack(fill="x", pady=(0, 14))
+        scenario_grid.columnconfigure((0, 1), weight=1, uniform="scenario")
+        for index, (key, text) in enumerate((
+                ("normal", "Normal"), ("dropped_data", "Dropped DATA"),
+                ("dropped_ack", "Dropped ACK"), ("unreachable", "Unreachable"))):
+            ttk.Button(
+                scenario_grid, text=text, command=lambda key=key: self._run_scenario(key)
+            ).grid(row=index // 2, column=index % 2, sticky="ew", padx=1, pady=1)
 
         result_card = tk.Frame(self.sidebar, bg=PANEL_2, padx=12, pady=10)
         result_card.pack(fill="x", pady=(0, 16))
@@ -400,12 +857,19 @@ class NetworkGUI(tk.Tk):
         self._stat(stats, 0, "ROUTE", self.path_var)
         self._stat(stats, 1, "TRAFFIC", self.packet_count_var)
         self._stat(stats, 2, "DROPS", self.drop_count_var)
+        card = tk.Frame(stats, bg=PANEL_2, padx=10, pady=7)
+        card.grid(row=1, column=0, columnspan=3, sticky="ew", padx=3, pady=(6, 0))
+        tk.Label(card, text="RELIABLE TRANSFER", bg=PANEL_2, fg=MUTED,
+                 font=("Segoe UI", 8, "bold")).pack(anchor="w")
+        tk.Label(card, textvariable=self.transfer_var, bg=PANEL_2, fg=TEXT,
+                 font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
 
         lower = ttk.Frame(self.content, style="Panel.TFrame")
         lower.grid(row=1, column=0, sticky="ew", pady=(14, 0))
         lower.columnconfigure(0, weight=1)
         lower.rowconfigure(0, weight=1)
         notebook = ttk.Notebook(lower)
+        self.notebook = notebook
         notebook.grid(row=0, column=0, sticky="ew")
         self._build_routes_tab(notebook)
         self._build_conditions_tab(notebook)
@@ -553,9 +1017,13 @@ class NetworkGUI(tk.Tk):
 
     def _endpoints_changed(self):
         self._draw_topology()
-        self.status_var.set("Endpoint change ready — network restarts on send")
+        self.status_var.set("Endpoint change ready - network restarts on send")
 
     def _restart_network(self, show_errors=True):
+        if self.transfer_in_flight:
+            if show_errors:
+                messagebox.showinfo("Transfer in progress", "Stop the transfer first.")
+            return False
         if self.probe_in_flight:
             if show_errors:
                 messagebox.showinfo("Probe in progress", "Wait for the current probe to finish.")
@@ -585,8 +1053,128 @@ class NetworkGUI(tk.Tk):
                 messagebox.showerror("Could not start network", str(exc))
             return False
 
+    def _run_scenario(self, name):
+        if self.probe_in_flight or self.transfer_in_flight:
+            return
+        source, destination = self.source_var.get(), self.destination_var.get()
+        try:
+            plan = build_scenario(name, self.base_network, self.base_routes,
+                                  source, destination)
+        except ValueError as exc:
+            messagebox.showerror("Scenario unavailable", str(exc))
+            return
+        # In-memory only: the Routes/Conditions tabs show the scenario's settings.
+        self.network_data, self.route_data = plan["network_data"], plan["route_data"]
+        self.observe_late = False
+        self.observe_late_var.set(False)
+        self.count_var.set(str(plan["count"]))
+        self.timeout_var.set(str(plan["timeout"]))
+        self.retries_var.set(str(plan["max_retries"]))
+        self._refresh_route_controls()
+        self._refresh_condition_controls()
+        self._start_transfer(scenario=plan["label"])
+
+    def _start_transfer(self, scenario=None):
+        if self.probe_in_flight or self.transfer_in_flight:
+            return
+        source, destination = self.source_var.get(), self.destination_var.get()
+        try:
+            settings = parse_transfer_settings(
+                source, destination, self.message_var.get(), self.count_var.get(),
+                self.timeout_var.get(), self.retries_var.get(),
+            )
+        except ValueError as exc:
+            messagebox.showerror("Invalid transfer settings", str(exc))
+            return
+        try:
+            self.status_var.set("Starting reliable transfer…")
+            self.update_idletasks()
+            self.controller.start(
+                self.network_data, self.route_data, source, destination,
+                mode="reliable", timeout=settings["timeout"],
+                max_retries=settings["max_retries"],
+            )
+            self.active_source, self.active_destination = source, destination
+            self.run_var.set(f"Run: {self.controller.run_id}")
+            self._draw_topology()
+            # Reset before the worker starts so every event of this run is counted.
+            self.metrics.reset(self.controller.run_id, len(settings["messages"]))
+            self.transfer_var.set(self.metrics.summary())
+            self.active_scenario = scenario
+            self.controller.begin_transfer(settings["messages"])
+        except Exception as exc:
+            self.controller.stop()
+            self.active_source = self.active_destination = None
+            self.status_var.set("Transfer failed to start")
+            self.status_badge.configure(bg="#4a1d2a", fg=BAD)
+            logging.getLogger(__name__).error("GUI could not start transfer: %s", exc)
+            messagebox.showerror("Could not start transfer", str(exc))
+            return
+        self.transfer_in_flight = True
+        self._set_transfer_controls(running=True)
+        prefix = f"{scenario}: " if scenario else ""
+        self.result_var.set(f"{prefix}transferring {len(settings['messages'])} message(s)…")
+        self.status_var.set("Reliable transfer running")
+        self.status_badge.configure(bg="#173c3a", fg=GOOD)
+
+    def _stop_transfer(self):
+        if not self.transfer_in_flight:
+            return
+        self.controller.stop()
+        # Force the next probe/send to start a fresh best-effort network.
+        self.active_source = self.active_destination = None
+        self.transfer_in_flight = False
+        self._set_transfer_controls(running=False)
+        self.result_var.set("Transfer stopped")
+        self.status_var.set("Transfer stopped - network restarts on send")
+        self.status_badge.configure(bg="#49391a", fg=WARN)
+
+    def _poll_transfer(self):
+        """Runs on the Tk thread; the worker only posts to a queue."""
+        if not self.transfer_in_flight:
+            return
+        outcome = self.controller.poll_transfer()
+        if outcome is None:
+            return
+        self.transfer_in_flight = False
+        self.active_source = self.active_destination = None
+        self._set_transfer_controls(running=False)
+        status = outcome["status"]
+        prefix = f"{self.active_scenario} - " if self.active_scenario else ""
+        if status == "COMPLETE":
+            self.result_var.set(f"{prefix}Transfer COMPLETE: {outcome['sent']}/{outcome['count']} acknowledged")
+            self.status_var.set("Transfer complete")
+            self.status_badge.configure(bg="#173c3a", fg=GOOD)
+        elif status == "FAILED":
+            self.result_var.set(f"{prefix}Transfer FAILED: {outcome['sent']}/{outcome['count']} acknowledged")
+            self.status_var.set("Transfer failed")
+            self.status_badge.configure(bg="#4a1d2a", fg=BAD)
+        else:
+            self.result_var.set(f"ERROR: {outcome.get('error')}")
+            self.status_var.set("Transfer failed")
+            self.status_badge.configure(bg="#4a1d2a", fg=BAD)
+
+    def _transfer_lockable_widgets(self):
+        kinds = (ttk.Button, ttk.Entry, ttk.Combobox, ttk.Checkbutton)
+        roots = [self.sidebar]
+        for tab_id in self.notebook.tabs():
+            if self.notebook.tab(tab_id, "text") in ("Routes", "Conditions"):
+                roots.append(self.notebook.nametowidget(tab_id))
+        pending, found = list(roots), []
+        while pending:
+            widget = pending.pop()
+            pending.extend(widget.winfo_children())
+            if isinstance(widget, kinds) and widget is not self.stop_button:
+                found.append(widget)
+        return found
+
+    def _set_transfer_controls(self, running):
+        for widget in self._transfer_lockable_widgets():
+            widget.state(["disabled"] if running else ["!disabled"])
+        self.stop_button.state(["!disabled"] if running else ["disabled"])
+
     def _send_probe(self):
-        if self.probe_in_flight:
+        if self.probe_in_flight or self.transfer_in_flight:
             return
         message = self.message_var.get()
         if not message:
@@ -926,6 +1514,8 @@ class NetworkGUI(tk.Tk):
         )
 
     def _drain_records(self):
+        self._poll_transfer()
+        metrics_changed = False
         try:
             while True:
                 record = self.records.get_nowait()
@@ -933,17 +1523,23 @@ class NetworkGUI(tk.Tk):
                 self._append_log(self.log_handler.format(record))
                 fields = parse_event(message)
                 event_name = fields.get("event")
+                metrics_changed |= self.metrics.apply(fields)
                 if event_name == "send":
                     self.packet_count_var.set(f"{self._increment_stat(self.packet_count_var.get())} sent")
-                    self._animate_packet(fields)
+                    self.animator.handle(fields)
+                elif event_name == "delay":
+                    self.animator.handle(fields)
                 elif event_name == "drop":
                     self.drop_count_var.set(f"{self._increment_stat(self.drop_count_var.get())} dropped")
-                    self._flash_device(fields.get("device"))
+                    if not self.animator.handle(fields):
+                        self._flash_device(fields.get("device"))
                 elif event_name == "late_response":
                     self.status_var.set("Late response observed")
                     self.status_badge.configure(bg="#49391a", fg=WARN)
         except queue.Empty:
             pass
+        if metrics_changed:
+            self.transfer_var.set(self.metrics.summary())
         self.after(75, self._drain_records)
 
     @staticmethod
@@ -952,41 +1548,6 @@ class NetworkGUI(tk.Tk):
             return int(value.split()[0]) + 1
         except (ValueError, IndexError):
             return 1
-
-    def _animate_packet(self, fields):
-        source = fields.get("device")
-        destination = fields.get("next_hop")
-        if source not in self.node_positions or destination not in self.node_positions:
-            return
-        x1, y1 = self.node_positions[source]
-        x2, y2 = self.node_positions[destination]
-        color = ACCENT if fields.get("type") == "DATA" else GOOD
-        packet = self.canvas.create_oval(
-            x1 - 8, y1 - 8, x1 + 8, y1 + 8,
-            fill=color, outline="#ffffff", width=1
-        )
-
-        def move(step=0):
-            if step > 20:
-                try:
-                    self.canvas.delete(packet)
-                except tk.TclError:
-                    pass
-                return
-            fraction = step / 20
-            try:
-                self.canvas.coords(
-                    packet,
-                    x1 + (x2 - x1) * fraction - 8,
-                    y1 + (y2 - y1) * fraction - 8,
-                    x1 + (x2 - x1) * fraction + 8,
-                    y1 + (y2 - y1) * fraction + 8,
-                )
-                self.after(30, move, step + 1)
-            except tk.TclError:
-                return
-
-        move()
 
     def _flash_device(self, device_id):
         item = self.node_items.get(device_id)
@@ -1018,9 +1579,10 @@ class NetworkGUI(tk.Tk):
         self.log_lines = 0
 
     def _on_close(self):
-        if self.probe_in_flight:
-            if not messagebox.askyesno("Probe in progress", "Stop the demo and close the GUI?"):
+        if self.probe_in_flight or self.transfer_in_flight:
+            if not messagebox.askyesno("Operation in progress", "Stop the demo and close the GUI?"):
                 return
+        self.animator.close()
         self.controller.stop()
         logging.getLogger().removeHandler(self.log_handler)
         self.destroy()

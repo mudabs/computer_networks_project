@@ -15,7 +15,8 @@ def event(run_id, device, name, packet=None, next_hop='-', **details):
                   msg_id=packet.id if packet else '-',
                   type=packet.type if packet else '-',
                   src=packet.src if packet else '-', dst=packet.dst if packet else '-',
-                  next_hop=next_hop, hop_limit=packet.hop_limit if packet else '-')
+                  next_hop=next_hop, ttl=packet.ttl if packet else '-',
+                  seq=packet.seq if packet else '-')
     fields.update(details)
     logger.info(' '.join(f'{key}={value}' for key, value in fields.items()))
 
@@ -36,25 +37,35 @@ class LinkSender:
         self.closed = False
         self.worker = None
 
-    def send(self, data, next_hop):
+    def send(self, data, next_hop, *, retransmit=False, duplicate=False):
+        """Send one packet; the keyword flags only annotate log events.
+
+        They are never part of the packet bytes: they ride with the packet
+        through loss, delay and the delayed queue into its final event.
+        """
         packet = Packet.from_bytes(data)
+        marks = {}
+        if retransmit:
+            marks['retransmit'] = 'true'
+        if duplicate:
+            marks['duplicate'] = 'true'
         delay = 0
         if next_hop in self.rules:
             rule, rng = self.rules[next_hop]
             if rng.random() < rule['loss']:
                 event(self.run_id, self.device_id, 'drop', packet, next_hop,
-                      reason='injected_loss', seed=rule['seed'])
+                      reason='injected_loss', seed=rule['seed'], **marks)
                 return
             delay = rule['delay_ms'] / 1000
         if not delay:
-            self.deliver(data, next_hop, packet)
+            self.deliver(data, next_hop, packet, marks)
             return
         with self.condition:
             if self.closed:
                 return
             self.sequence += 1
             heapq.heappush(self.queue, (time.monotonic() + delay, self.sequence,
-                                       data, next_hop, packet))
+                                       data, next_hop, packet, marks))
             event(self.run_id, self.device_id, 'delay', packet, next_hop,
                   delay_ms=delay * 1000)
             if self.worker is None:
@@ -62,10 +73,10 @@ class LinkSender:
                 self.worker.start()
             self.condition.notify()
 
-    def deliver(self, data, next_hop, packet):
+    def deliver(self, data, next_hop, packet, marks=None):
         address = self.config.get_address(next_hop)
         self.sock.sendto(data, (address['ip'], address['port']))
-        event(self.run_id, self.device_id, 'send', packet, next_hop)
+        event(self.run_id, self.device_id, 'send', packet, next_hop, **(marks or {}))
 
     def run(self):
         with self.condition:
@@ -77,19 +88,19 @@ class LinkSender:
                 if remaining > 0:
                     self.condition.wait(remaining)
                     continue
-                _, _, data, next_hop, packet = heapq.heappop(self.queue)
+                _, _, data, next_hop, packet, marks = heapq.heappop(self.queue)
                 try:
-                    self.deliver(data, next_hop, packet)
+                    self.deliver(data, next_hop, packet, marks)
                 except OSError as exc:
                     event(self.run_id, self.device_id, 'drop', packet, next_hop,
-                          reason='send_error', error=repr(exc))
+                          reason='send_error', error=repr(exc), **marks)
 
     def close(self):
         with self.condition:
             self.closed = True
-            for _, _, _, next_hop, packet in self.queue:
+            for _, _, _, next_hop, packet, marks in self.queue:
                 event(self.run_id, self.device_id, 'drop', packet, next_hop,
-                      reason='shutdown')
+                      reason='shutdown', **marks)
             self.queue.clear()
             self.condition.notify_all()
         if self.worker is not None:

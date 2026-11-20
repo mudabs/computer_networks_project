@@ -100,7 +100,7 @@ class TestHostCommunication(unittest.TestCase):
         self.assertEqual(packet.payload, "hello")
         self.assertEqual(packet.type, "DATA")
         self.assertEqual(packet.id, 0)
-        self.assertEqual(packet.hop_limit, 8)
+        self.assertEqual(packet.ttl, 8)
         self.assertEqual(self.host.packet_id, 1)
 
     def test_send_increments_id_for_each_message(self):
@@ -121,7 +121,7 @@ class TestHostCommunication(unittest.TestCase):
         self.assertEqual(second_packet.id, 1)
 
     def test_receive_returns_packet_addressed_to_host(self):
-        packet = Packet("H2", "H1", 8, "RESPONSE", 3, "hello")
+        packet = Packet("H2", "H1", 8, "RESPONSE", 3, 0, "hello")
         self.mock_sock.recvfrom.return_value = (
             packet.to_bytes(),
             ("127.0.0.1", 6001),
@@ -137,7 +137,7 @@ class TestHostCommunication(unittest.TestCase):
         self.assertEqual(received.id, 3)
 
     def test_receive_ignores_packet_for_another_host(self):
-        packet = Packet("H2", "H3", 8, "RESPONSE", 3, "hello")
+        packet = Packet("H2", "H3", 8, "RESPONSE", 3, 0, "hello")
         self.mock_sock.recvfrom.return_value = (
             packet.to_bytes(),
             ("127.0.0.1", 6001),
@@ -180,9 +180,10 @@ class TestHostProbe(unittest.TestCase):
         response = Packet(
             src="H2",
             dst="H1",
-            hop_limit=8,
+            ttl=8,
             type="RESPONSE",
             id=0,
+            seq=0,
             payload="hello",
         )
         self.mock_sock.recvfrom.return_value = (
@@ -211,9 +212,10 @@ class TestHostProbe(unittest.TestCase):
         wrong_response = Packet(
             src="H2",
             dst="H1",
-            hop_limit=8,
+            ttl=8,
             type="RESPONSE",
             id=99,
+            seq=0,
             payload="wrong",
         )
         self.mock_sock.recvfrom.side_effect = [
@@ -228,7 +230,7 @@ class TestHostProbe(unittest.TestCase):
     def test_probe_ignores_response_with_wrong_payload(self):
         import socket
         self.host.receive = MagicMock(side_effect=[
-            Packet("H2", "H1", 8, "RESPONSE", 0, "different"),
+            Packet("H2", "H1", 8, "RESPONSE", 0, 0, "different"),
             socket.timeout(),
         ])
         self.assertIsNone(self.host.probe("H2", "hello", timeout=0.1))
@@ -240,9 +242,10 @@ class TestHostProbe(unittest.TestCase):
         wrong_response = Packet(
             src="H3",
             dst="H1",
-            hop_limit=8,
+            ttl=8,
             type="RESPONSE",
             id=0,
+            seq=0,
             payload="wrong",
         )
         self.mock_sock.recvfrom.side_effect = [
@@ -271,9 +274,10 @@ class TestHostEcho(unittest.TestCase):
         request = Packet(
             src="H2",
             dst="H1",
-            hop_limit=8,
+            ttl=8,
             type="DATA",
             id=42,
+            seq=0,
             payload="hello",
         )
 
@@ -288,16 +292,17 @@ class TestHostEcho(unittest.TestCase):
         self.assertEqual(response.type, "RESPONSE")
         self.assertEqual(response.id, 42)
         self.assertEqual(response.payload, "hello")
-        self.assertEqual(response.hop_limit, 8)
+        self.assertEqual(response.ttl, 8)
         self.assertEqual(address, ("127.0.0.1", 6001))
 
     def test_echo_ignores_response_packet(self):
         packet = Packet(
             src="H2",
             dst="H1",
-            hop_limit=8,
+            ttl=8,
             type="RESPONSE",
             id=42,
+            seq=0,
             payload="hello",
         )
 
@@ -322,9 +327,10 @@ class TestHostRun(unittest.TestCase):
         request = Packet(
             src="H2",
             dst="H1",
-            hop_limit=8,
+            ttl=8,
             type="DATA",
             id=7,
+            seq=0,
             payload="hello",
         )
 
@@ -345,9 +351,10 @@ class TestHostRun(unittest.TestCase):
         request = Packet(
             src="H2",
             dst="H1",
-            hop_limit=8,
+            ttl=8,
             type="DATA",
             id=8,
+            seq=0,
             payload="hello",
         )
 

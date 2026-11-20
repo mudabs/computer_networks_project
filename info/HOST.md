@@ -1,5 +1,5 @@
 
-# Host Implementation — Progress Report Notes
+# Host Implementation - Progress Report Notes
 
 ## 1. Scope and Responsibilities
 
