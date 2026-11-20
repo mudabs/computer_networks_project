@@ -194,27 +194,38 @@ The retry counter resets for each new DATA packet and for FIN.
 ACKs that do not match leave the sender waiting until the current
 deadline.
 
-### Receiver state machine (draft)
+### Receiver state machine
 
-The receiver delivers expected DATA once and sends an ACK. If the sender
-retransmits a DATA packet that was already delivered, the receiver resends
-its ACK and leaves the delivered message count unchanged.
+Verified against `Host._handle_data`, `Host._handle_fin`, and the receiver
+loop at commit `b8e2379`. Expected sequence numbers are tracked by
+source host and transfer ID.
 
 ```mermaid
 flowchart TD
-    Wait["Wait for DATA"] --> Check{"Which DATA arrived?"}
-    Check -->|Expected DATA| Deliver["Deliver once and send ACK"]
-    Deliver --> Final{"Final message?"}
-    Final -->|No| Advance["Advance expected sequence"]
-    Advance --> Wait
-    Final -->|Yes| Grace["Wait during grace period"]
-    Check -->|Previously accepted DATA| Repeat["Resend ACK"]
-    Repeat --> Wait
-    Check -->|Other DATA| Wait
-    Grace -->|Duplicate final DATA| ReAck["Resend final ACK"]
+    Wait["Wait for packet"] --> Kind{"Packet type?"}
+    Kind -->|DATA| Seq{"Sequence?"}
+    Seq -->|Expected| Accept["Send ACK and advance expected sequence"]
+    Accept --> Deliver["Log delivery once"]
+    Deliver --> Wait
+    Seq -->|Previously accepted| Duplicate["Log duplicate and resend ACK"]
+    Duplicate --> Wait
+    Seq -->|Future| Drop["Log drop"]
+    Drop --> Wait
+    Kind -->|FIN| Finish{"Transfer already completed?"}
+    Finish -->|Yes| Duplicate
+    Finish -->|No| Valid{"Sequence equals expected?"}
+    Valid -->|No| Drop
+    Valid -->|Yes| AckFin["Send FIN ACK and record completion"]
+    AckFin --> Grace["Wait until fixed grace deadline"]
+    Grace -->|Duplicate DATA or FIN| ReAck["Resend ACK"]
     ReAck --> Grace
-    Grace -->|Grace period expires| Done["Receiver finished"]
+    Grace -->|Deadline reached| Done["Receiver stops"]
 ```
+
+An accepted FIN starts the grace period after the ACK send attempt.
+The default grace period is timeout × (max retries + 1), or 4 seconds
+with default settings. Duplicate FIN packets are acknowledged again
+and preserve the original grace deadline.
 
 This diagram describes the planned behavior. Verify how the integrated
 receiver identifies the final message and handles the grace-period timer.
