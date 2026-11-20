@@ -166,26 +166,33 @@ with Python 3.14.10 after installing Homebrew's `python-tk@3.14`.
 - Duplicate DATA and FIN packets are acknowledged during the grace period.
   Duplicate FIN packets do not extend the grace deadline.
 
-### Sender state machine (draft)
+### Sender state machine
 
-The sender keeps one DATA packet outstanding at a time. A matching
-ACK lets it advance to the next message. On timeout, it resends the
-same DATA packet if retries remain.
+Verified against `Host.start_transfer` and `Host._send_reliably`
+at commit `b8e2379`. The sender waits for an ACK for each DATA packet,
+then sends FIN and waits for its ACK.
 
 ```mermaid
 flowchart TD
-    Send["Send current DATA"] --> Wait["Wait for matching ACK"]
-    Wait -->|Matching ACK| More{"More messages?"}
-    More -->|Yes| Advance["Advance to next message"]
-    Advance --> Send
-    More -->|No| Done["Transfer complete"]
-    Wait -->|Timeout| Retry{"Retries remaining?"}
-    Retry -->|Yes| Send
-    Retry -->|No| Fail["Transfer failed"]
+    Data["Send current DATA"] --> WaitData["Wait for matching DATA ACK"]
+    WaitData -->|Matching ACK| More{"More DATA?"}
+    More -->|Yes| Advance["Advance sequence"]
+    Advance --> Data
+    More -->|No| Fin["Send FIN"]
+    Fin --> WaitFin["Wait for matching FIN ACK"]
+    WaitFin -->|Matching ACK| Complete["Transfer COMPLETE"]
+    WaitData -->|Timeout| RetryData{"Retries remain?"}
+    RetryData -->|Yes| Data
+    RetryData -->|No| Failed["Transfer FAILED"]
+    WaitFin -->|Timeout| RetryFin{"Retries remain?"}
+    RetryFin -->|Yes| Fin
+    RetryFin -->|No| Failed
 ```
 
-Verify the ACK matching rules, timeout, and retry limit against the
-integrated sender implementation.
+Each retry resends the same packet and restarts its timeout.
+The retry counter resets for each new DATA packet and for FIN.
+ACKs that do not match leave the sender waiting until the current
+deadline.
 
 ### Receiver state machine (draft)
 
