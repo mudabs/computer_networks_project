@@ -1,176 +1,232 @@
 # Mini Internet Packet Format
-## Overview
 
-This document defines the packet format used by the Mini Internet hosts and routers.
-Packets are serialized as JSON and encoded as UTF-8 before being transmitted using UDP.
-The complete serialized packet must not exceed 1,200 bytes.
-Each packet contains six required fields:
+This document describes the current Track B packet format and reliable
+transfer behavior verified against commit `b8e2379`.
+
+All 294 tests passed on macOS with Python 3.14.10 after installing
+Homebrew's `python-tk@3.14`.
+
+## Encoding and size limit
+
+Packets are serialized as JSON, encoded as UTF-8, and transmitted over UDP.
+The complete serialized packet must fit within 1,200 bytes, including
+field names, values, JSON structure, and payload.
+
+Received datagrams are decoded, parsed, and validated before processing.
+Invalid packets are rejected and logged.
+
+## Current packet structure
+
+Every packet contains exactly seven fields:
 
 - `src`
 - `dst`
-- `hop_limit`
+- `ttl`
 - `type`
 - `id`
+- `seq`
 - `payload`
 
-## Packet Structure
+Supported packet types are `DATA`, `RESPONSE`, `ACK`, and `FIN`.
 
-A packet is represented as a JSON object containing exactly six fields.
+### DATA example
 
 ```json
 {
   "src": "H1",
   "dst": "H2",
-  "hop_limit": 8,
+  "ttl": 8,
   "type": "DATA",
-  "id": 0,
+  "id": 42,
+  "seq": 0,
   "payload": "Hello H2"
 }
 ```
+
+### ACK example
+
+```json
+{
+  "src": "H2",
+  "dst": "H1",
+  "ttl": 8,
+  "type": "ACK",
+  "id": 42,
+  "seq": 0,
+  "payload": ""
+}
+```
+
+### FIN example
+
+For a transfer containing one DATA message, FIN uses sequence number 1:
+
+```json
+{
+  "src": "H1",
+  "dst": "H2",
+  "ttl": 8,
+  "type": "FIN",
+  "id": 42,
+  "seq": 1,
+  "payload": ""
+}
+```
+
+The receiver acknowledges FIN using the same transfer ID and sequence
+number, with the source and destination reversed.
 
 ## Fields
 
-### `src`
-The virtual address of the device that originally created the packet.
-- Type: string
-- Example: `"H1"`
-- The source address does not change when the packet is forwarded.
+| Field | Meaning | Validation |
+| --- | --- | --- |
+| `src` | Virtual address of the packet originator | Nonempty string |
+| `dst` | Final virtual destination | Nonempty string |
+| `ttl` | Remaining forwarding hop limit | Integer from 1 to 8 |
+| `type` | Packet purpose | `DATA`, `RESPONSE`, `ACK`, or `FIN` |
+| `id` | Message or transfer identifier | Unsigned 32-bit integer |
+| `seq` | Sequence number within the transfer | Unsigned 32-bit integer |
+| `payload` | Application message or empty control payload | String; ACK payload must be empty |
 
-### `dst`
-The virtual address of the packet's final destination.
-- Type: string
-- Example: `"H2"`
-- The destination address does not change when the packet is forwarded.
-- Routers use the destination address to select the next hop.
+Both `id` and `seq` permit values from 0 to 4,294,967,295.
 
-### `hop_limit`
-The number of forwarding hops remaining for the packet.
-- Type: integer
-- Valid range: `1–8`
-- The value is decreased when a router forwards the packet.
-- A packet whose hop limit has expired is discarded.
+### Virtual endpoints and UDP endpoints
 
-### `type`
-Identifies the type of message carried by the packet.
-- Type: string
-- Supported values:
-  - `DATA` — an ordinary application message.
-  - `RESPONSE` — a response to an earlier message.
-- Additional types may be added if required by the project extension.
+The JSON `src` and `dst` identify the original virtual source and final
+virtual destination. These values remain unchanged during forwarding.
 
-### `id`
-Identifies the message so it can be tracked across the network.
-- Type: unsigned 32-bit integer
-- Valid range: `0–4,294,967,295`
-- Used to correlate messages and log records.
-- Does not provide reliable delivery by itself.
+The actual UDP destination identifies the next device on the route.
+For example, H1 sends a packet for H2 to router A's UDP port. Router A
+then sends the same virtual packet toward its configured next hop.
 
-### `payload`
-Contains the application message carried by the packet.
-- Type: string
-- Contains the short message being sent between hosts.
-- The payload must fit within the overall 1,200-byte packet limit.
+Routers decrement `ttl` when forwarding. A packet received with
+`ttl` of 1 is dropped because forwarding would exhaust its hop limit.
 
-## Encoding
-Packets are serialized as JSON and encoded as UTF-8 before being transmitted through UDP.
-Received UDP data is decoded from UTF-8 and parsed as JSON before the packet is validated.
-
-## Size Limit
-The complete serialized packet must not exceed 1,200 bytes.
-The limit includes the JSON structure, field names, field values, and payload after UTF-8 encoding.
-
-## Validation
-A packet is invalid if:
-- It is not valid UTF-8.
-- It is not valid JSON.
-- It is not a JSON object.
-- A required field is missing.
-- An unexpected field is present.
-- A field has the wrong type.
-- `hop_limit` is outside the range `1–8`.
-- `type` is not a supported message type.
-- `id` is outside the unsigned 32-bit range.
-- The serialized packet exceeds 1,200 bytes.
-Invalid packets must be rejected without crashing the host or router process.
-
-## Example
-A valid packet:
-```json
-{
-  "src": "H1",
-  "dst": "H2",
-  "hop_limit": 8,
-  "type": "DATA",
-  "id": 0,
-  "payload": "Hello H2"
-}
-```
-When a router forwards the packet, the `hop_limit` is decreased. The other fields remain unchanged.
-```json
-{
-  "src": "H1",
-  "dst": "H2",
-  "hop_limit": 7,
-  "type": "DATA",
-  "id": 0,
-  "payload": "Hello H2"
-}
-```
-
-## Error Handling
-Invalid packets must be rejected without crashing the host or router process.
-The receiver should record an error in its log when a packet is rejected.
-
-
-## Track B packet format (draft)
-
-This section follows the packet format in `feat/protocol_and_architecture`
-at commit `557ce9c`. The baseline format above describes `main`.
+### DATA and ACK fields
 
 | Field | DATA | ACK |
 | --- | --- | --- |
-| `src` | Virtual address of the sender | Virtual address of the receiver sending the acknowledgment |
-| `dst` | Virtual address of the receiver | Virtual address of the original sender |
-| `ttl` | Remaining forwarding hop limit | Remaining forwarding hop limit for the return path |
+| `src` | Sending host | Host acknowledging receipt |
+| `dst` | Receiving host | Original sending host |
+| `ttl` | Forward-path hop limit | Return-path hop limit |
 | `type` | `DATA` | `ACK` |
-| `id` | Transfer identifier | Same `id` as the DATA being acknowledged |
-| `seq` | Sequence value for this DATA packet | Same `seq` as the DATA being acknowledged |
-| `payload` | Application message | Empty string (`""`) |
+| `id` | Transfer identifier | Same ID as the DATA or FIN being acknowledged |
+| `seq` | Message sequence number | Same sequence as the DATA or FIN being acknowledged |
+| `payload` | Application message | Empty string |
 
-The draft Track B packet validator requires `ttl` to be an integer
-from 1 to 8. Both `id` and `seq` are unsigned 32-bit integers.
-ACK packets must carry an empty string as the payload. The full
-UTF-8 JSON packet is limited to 1,200 bytes.
+### FIN fields
 
-### Verified reliable transfer behavior
+FIN uses the transfer's source, destination, and ID.
+Its sequence number equals the number of DATA messages in the transfer.
+The sender creates FIN with an empty payload.
 
-Verified against commit `b8e2379`. All 294 tests passed on macOS
-with Python 3.14.10 after installing Homebrew's `python-tk@3.14`.
+FIN is sent after all DATA packets have been acknowledged.
+The sender marks the transfer complete after receiving the matching
+FIN acknowledgment.
 
-- Packets contain `src`, `dst`, `ttl`, `type`, `id`, `seq`, and `payload`.
-- DATA sequence numbers start at 0 and increase by one per message.
-- All packets in one transfer share the same transfer ID.
-- After all DATA packets are acknowledged, the sender sends FIN with
-  `seq` equal to the number of messages and an empty payload.
-- Transfer completion requires an ACK for FIN.
-- An ACK matches when its source and destination reverse the outgoing
-  packet's endpoints and its ID and sequence number match.
-- The default timeout is 1 second. The default retry limit permits
-  three retransmissions per DATA or FIN packet.
-- Exhausting the retry limit marks the transfer FAILED.
-- The receiver accepts expected DATA, advances the expected sequence,
-  and acknowledges it. Previously accepted DATA is acknowledged again.
-  Future sequence numbers are dropped as out of order.
-- An accepted FIN starts the receiver grace period. Its default duration
-  is timeout × (max retries + 1), which is 4 seconds with default settings.
-- Duplicate DATA and FIN packets are acknowledged during the grace period.
-  Duplicate FIN packets do not extend the grace deadline.
+### RESPONSE packets
 
-### Sender state machine
+Best-effort mode uses RESPONSE packets to echo received DATA.
+The source host matches the response against the original request's
+virtual endpoints, ID, and payload.
+
+Reliable mode acknowledges DATA and FIN through ACK packets.
+
+## Validation
+
+A packet is rejected when:
+
+- The datagram exceeds 1,200 bytes.
+- Its bytes cannot be decoded as UTF-8.
+- Its content cannot be parsed as JSON.
+- The JSON value is not an object.
+- A required field is missing.
+- An unexpected field is present.
+- A field has the wrong type.
+- `src` or `dst` is empty or contains only whitespace.
+- `ttl` is outside the range 1 to 8.
+- `type` is unsupported.
+- `id` or `seq` is outside the unsigned 32-bit range.
+- An ACK contains a nonempty payload.
+
+The packet validator checks packet structure. The host's reliable-transfer
+logic checks whether the packet belongs to the expected transfer and
+sequence.
+
+## Reliable transfer behavior
+
+### Transfer identifiers and sequence numbers
+
+All DATA packets and FIN in one transfer share the same transfer ID.
+
+DATA sequence numbers begin at 0 and increase by one per message.
+For a transfer containing N messages, DATA uses sequence numbers
+0 through N − 1, and FIN uses N.
+
+The receiver tracks its expected sequence by source host and transfer ID.
+
+### ACK matching
+
+An ACK matches the outstanding DATA or FIN packet when:
+
+- Its type is ACK.
+- Its source equals the outgoing packet's destination.
+- Its destination equals the outgoing packet's source.
+- Its ID equals the outgoing packet's ID.
+- Its sequence equals the outgoing packet's sequence.
+
+Packets that do not satisfy these conditions leave the sender waiting
+until the current deadline.
+
+### Timeout and retries
+
+The default timeout is 1 second.
+The default maximum is three retransmissions per DATA or FIN packet.
+
+The sender transmits the packet once and starts a monotonic deadline.
+On timeout, it retransmits the same serialized packet if retries remain,
+then starts a new deadline.
+
+The retry counter resets for each new DATA packet and for FIN.
+With the default settings, each packet has at most four send attempts.
+
+Exhausting the retry limit marks the transfer FAILED. The log identifies
+whether failure occurred while awaiting a DATA acknowledgment or the FIN
+acknowledgment.
+
+### Ordered delivery and duplicate handling
+
+The receiver processes DATA according to its sequence number:
+
+- An expected sequence is acknowledged, recorded as accepted, and delivered.
+  The expected sequence advances by one.
+- A previously accepted sequence is logged as a duplicate and acknowledged
+  again. The application receives the message once.
+- A future sequence is dropped and logged as out of order.
+
+### FIN and receiver grace period
+
+A new FIN is accepted when its sequence equals the receiver's expected
+sequence. The receiver sends its ACK, records completion, and starts
+the grace period.
+
+The default grace period is:
+
+`timeout × (max retries + 1)`
+
+With the default timeout and retry limit, this is 4 seconds.
+
+During this period, duplicate DATA and FIN packets can be acknowledged
+again. Duplicate FIN packets preserve the original grace deadline.
+The reliable receiver loop stops when that deadline expires.
+
+A FIN with an unexpected sequence is dropped and logged.
+A FIN for an already completed transfer is acknowledged again.
+
+## Sender state machine
 
 Verified against `Host.start_transfer` and `Host._send_reliably`
-at commit `b8e2379`. The sender waits for an ACK for each DATA packet,
-then sends FIN and waits for its ACK.
+at commit `b8e2379`.
 
 ```mermaid
 flowchart TD
@@ -189,16 +245,13 @@ flowchart TD
     RetryFin -->|No| Failed
 ```
 
-Each retry resends the same packet and restarts its timeout.
-The retry counter resets for each new DATA packet and for FIN.
-ACKs that do not match leave the sender waiting until the current
-deadline.
+Each retry resends the current packet and starts a new timeout.
+Moving to another DATA packet or to FIN resets the retry counter.
 
-### Receiver state machine
+## Receiver state machine
 
-Verified against `Host._handle_data`, `Host._handle_fin`, and the receiver
-loop at commit `b8e2379`. Expected sequence numbers are tracked by
-source host and transfer ID.
+Verified against `Host._handle_data`, `Host._handle_fin`, and the
+reliable receiver loop at commit `b8e2379`.
 
 ```mermaid
 flowchart TD
@@ -222,11 +275,38 @@ flowchart TD
     Grace -->|Deadline reached| Done["Receiver stops"]
 ```
 
-An accepted FIN starts the grace period after the ACK send attempt.
-The default grace period is timeout × (max retries + 1), or 4 seconds
-with default settings. Duplicate FIN packets are acknowledged again
-and preserve the original grace deadline.
+The grace-period ACK send attempt leaves the original deadline unchanged.
+The receiver continues processing incoming packets during the grace period.
 
-This diagram describes the planned behavior. Verify how the integrated
-receiver identifies the final message and handles the grace-period timer.
+## Historical baseline at a66e637
 
+The earlier baseline used six fields:
+
+`src`, `dst`, `hop_limit`, `type`, `id`, and `payload`.
+
+It supported DATA and RESPONSE packets. The source sent each probe once
+and waited for a matching echo response.
+
+The current implementation uses `ttl`, includes `seq`, and supports
+ACK and FIN for reliable transfer. Historical six-field JSON examples
+require the earlier baseline revision.
+
+## Verification
+
+Run from the repository root:
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+At commit `b8e2379`, all 294 tests passed on macOS with Python 3.14.10
+and Tkinter installed through Homebrew's `python-tk@3.14`.
+
+Relevant implementation and test files include:
+
+- `packet.py`
+- `host.py`
+- `router.py`
+- `tests/test_protocol.py`
+- `tests/test_reliable_ordered_delivery.py`
+- `tests/test_receiver_grace_period.py`
