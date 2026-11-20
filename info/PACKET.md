@@ -142,6 +142,30 @@ from 1 to 8. Both `id` and `seq` are unsigned 32-bit integers.
 ACK packets must carry an empty string as the payload. The full
 UTF-8 JSON packet is limited to 1,200 bytes.
 
+### Verified reliable transfer behavior
+
+Verified against commit `b8e2379`. All 294 tests passed on macOS
+with Python 3.14.10 after installing Homebrew's `python-tk@3.14`.
+
+- Packets contain `src`, `dst`, `ttl`, `type`, `id`, `seq`, and `payload`.
+- DATA sequence numbers start at 0 and increase by one per message.
+- All packets in one transfer share the same transfer ID.
+- After all DATA packets are acknowledged, the sender sends FIN with
+  `seq` equal to the number of messages and an empty payload.
+- Transfer completion requires an ACK for FIN.
+- An ACK matches when its source and destination reverse the outgoing
+  packet's endpoints and its ID and sequence number match.
+- The default timeout is 1 second. The default retry limit permits
+  three retransmissions per DATA or FIN packet.
+- Exhausting the retry limit marks the transfer FAILED.
+- The receiver accepts expected DATA, advances the expected sequence,
+  and acknowledges it. Previously accepted DATA is acknowledged again.
+  Future sequence numbers are dropped as out of order.
+- An accepted FIN starts the receiver grace period. Its default duration
+  is timeout × (max retries + 1), which is 4 seconds with default settings.
+- Duplicate DATA and FIN packets are acknowledged during the grace period.
+  Duplicate FIN packets do not extend the grace deadline.
+
 ### Sender state machine (draft)
 
 The sender keeps one DATA packet outstanding at a time. A matching
